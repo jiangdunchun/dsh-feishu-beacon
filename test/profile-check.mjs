@@ -10,34 +10,75 @@
  * Usage:
  *   node test/profile-check.mjs [profile-name] [path-to-dsh-checkout]
  *
- * The default dsh checkout is the npx cache this machine booted from; override
- * it when the harness lives elsewhere.
+ * The dsh checkout is located in this order, so the same check works on a
+ * development machine and in CI:
+ *
+ *   1. the second argument
+ *   2. $DSH_CHECKOUT
+ *   3. `npm root -g` plus @deepseek-ai/dsh (a globally installed dsh)
+ *   4. the npx cache this machine booted from
+ *
+ * The install's own build hash is in the dump module's filename, so the module
+ * is found by prefix rather than by a hardcoded name.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import { join } from "node:path";
 
 const profile = process.argv[2] ?? "web";
-const dshRoot = process.argv[3] ?? join(
-  process.env.LOCALAPPDATA ?? "",
-  "npm-cache",
-  "_npx",
-  "1e7f6d9597241db0",
-  "node_modules",
-  "@deepseek-ai",
-  "dsh"
-);
 
-const dumpModule = join(dshRoot, "lib", "dump-config-lFgMwK8i.js");
+/** @deepseek-ai/dsh under npm's global root, when the CLI was installed globally. */
+function globalDshRoot() {
+  try {
+    const root = execFileSync(process.platform === "win32" ? "npm.cmd" : "npm", ["root", "-g"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    }).trim();
+    return root.length > 0 ? join(root, "@deepseek-ai", "dsh") : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The npx cache entry, named by the hash npx gave that installation. */
+function npxDshRoot() {
+  const base = process.platform === "win32"
+    ? join(process.env.LOCALAPPDATA ?? "", "npm-cache", "_npx")
+    : join(process.env.HOME ?? "", ".npm", "_npx");
+  if (!existsSync(base)) return undefined;
+  for (const entry of readdirSync(base)) {
+    const candidate = join(base, entry, "node_modules", "@deepseek-ai", "dsh");
+    if (existsSync(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+const dshRoot = process.argv[3] ?? process.env.DSH_CHECKOUT ?? globalDshRoot() ?? npxDshRoot();
+
+if (dshRoot === undefined) {
+  process.stderr.write("profile-check: cannot locate a dsh installation; pass it as the second argument or set $DSH_CHECKOUT\n");
+  process.exit(2);
+}
+
+/** The dump-config module, whose filename carries the install's build hash. */
+function findDumpModule(root) {
+  const lib = join(root, "lib");
+  if (!existsSync(lib)) return undefined;
+  const match = readdirSync(lib).find((name) => name.startsWith("dump-config-") && name.endsWith(".js"));
+  return match === undefined ? undefined : join(lib, match);
+}
+
+const dumpModule = findDumpModule(dshRoot);
 const bundleManifest = join(dshRoot, "..", "dsh-base", "cordis.patch.yml");
 
 if (!existsSync(dshRoot)) {
   process.stderr.write(`profile-check: no dsh checkout at ${dshRoot}\n`);
   process.exit(2);
 }
-if (!existsSync(dumpModule)) {
-  process.stderr.write(`profile-check: ${dumpModule} is missing; the dsh build layout changed\n`);
+if (dumpModule === undefined) {
+  process.stderr.write(`profile-check: no dump-config module under ${join(dshRoot, "lib")}; the dsh build layout changed\n`);
   process.exit(2);
 }
 

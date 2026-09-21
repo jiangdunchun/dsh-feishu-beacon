@@ -45,7 +45,14 @@
   },
   "scripts": {
     "test": "node test/no-cjk.mjs && node test/smoke.mjs && node test/client-smoke.mjs",
-    "check": "node --check lib/index.js && node --check lib/client.js"
+    "check": "node --check lib/index.js && node --check lib/client.js",
+    "test:profile": "node test/profile-check.mjs"
+  },
+  "//devDependencies": "Test-time resolution set only. The host half imports @deepseek-ai/dsh-tools and @deepseek-ai/schemastery; a dsh profile provides them in production, and a checkout reaches them through a node_modules/@deepseek-ai junction. CI has neither, so the three published packages are installed here and nothing else. They are pinned to the dsh release this plugin was verified against: dsh is a developer preview with breaking changes between releases.",
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-tools": "0.1.5-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.2"
   },
   "dsh": {
     "bundle": {

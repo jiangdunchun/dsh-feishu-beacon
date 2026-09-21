@@ -37,7 +37,9 @@ const TARGETS = [
   "test/client-smoke.mjs",
   "test/no-cjk.mjs",
   "test/live-check.mjs",
-  "test/profile-check.mjs"
+  "test/profile-check.mjs",
+  "test/install-check.mjs",
+  ".github/workflows/ci.yml"
 ];
 
 const offenders = [];

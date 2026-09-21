@@ -21,13 +21,15 @@ Thumbs.db
 
 # Local scratch space. `restart-harness.mjs` is a per-machine boot helper for
 # the process that serves the Web GUI, the task brief is kept beside the plugin
-# rather than published with it, and `.community/` holds checkouts of the
-# community registries used while preparing a submission.
+# rather than published with it, `.community/` holds checkouts of the community
+# registries used while preparing a submission, and `.ci-sim/` is a throwaway
+# node_modules used to reproduce what CI resolves against.
 tmp/
 *.local
 restart-harness.mjs
 REPRODUCE-dsh-feishu-beacon.md
 .community/
+.ci-sim/
 fetch-doc.mjs
 
 # The workspace-local git configuration (a safe.directory exception for this

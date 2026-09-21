@@ -1,0 +1,134 @@
+# CI for dsh-feishu-beacon.
+#
+# Two jobs, because the two things that can break here break differently.
+#
+# `test` is the offline suite: the host smoke test drives the plugin through a
+# hand-built context with a local HTTP server standing in for the Feishu
+# webhook, the client test stubs the module loader and react, and the no-CJK
+# scan enforces the source rule. None of it touches the network or a real
+# harness, so it is fast and deterministic.
+#
+# `install` is the part a tarball listing cannot prove: it installs the plugin
+# into a profile the way `dsh plugin add` does, then resolves the package's own
+# entry points out of that profile and imports the host half. A dropped file in
+# `files`, an `exports` subpath that points nowhere, or an import that only
+# resolves inside a checkout all pass `npm pack --dry-run` and fail here.
+#
+# The host packages are pinned to the dsh release this plugin was verified
+# against rather than `latest`: dsh is a developer preview with promised
+# breaking changes, so a red job against a newer dsh is information, not a
+# regression.
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DSH_VERSION: 0.1.5-rc.2
+
+jobs:
+  test:
+    name: offline suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      # The host half imports two @deepseek-ai packages. A dsh profile provides
+      # them in production and a checkout reaches them through a
+      # node_modules/@deepseek-ai junction; CI has neither, and these are the
+      # only three packages the suites need.
+      - name: Provide the host packages the tests resolve against
+        run: npm install --no-audit --no-fund --ignore-scripts
+
+      - name: Syntax
+        run: |
+          node --check lib/index.js
+          node --check lib/client.js
+          for file in test/*.mjs; do node --check "$file"; done
+
+      - name: Zero CJK in shipped sources
+        run: node test/no-cjk.mjs
+
+      - name: Host smoke test
+        run: node test/smoke.mjs
+
+      - name: Client contract test
+        run: node test/client-smoke.mjs
+
+      - name: Publish manifest
+        run: |
+          node -e "
+            const { execSync } = require('node:child_process');
+            // Windows ships npm as npm.cmd, and a .cmd is only runnable through a
+            // shell -- which is why this is one command string rather than
+            // execFileSync('npm', [...]) (that is ENOENT here, EINVAL for npm.cmd).
+            const out = execSync('npm pack --dry-run --json', { encoding: 'utf8' });
+            const files = JSON.parse(out)[0].files.map((f) => f.path).sort();
+            const expected = ['LICENSE', 'README.md', 'cordis.patch.yml', 'lib/client.js', 'lib/index.js', 'package.json'];
+            const extra = files.filter((f) => !expected.includes(f));
+            const missing = expected.filter((f) => !files.includes(f));
+            if (extra.length > 0) throw new Error('tarball carries files it should not: ' + extra.join(', '));
+            if (missing.length > 0) throw new Error('tarball is missing: ' + missing.join(', '));
+            console.log('tarball carries exactly ' + files.length + ' files: ' + files.join(', '));
+          "
+
+  install:
+    name: install into a profile
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Install dsh and the test-time host packages
+        run: |
+          npm install -g "@deepseek-ai/dsh@$env:DSH_VERSION"
+          npm install --no-audit --no-fund --ignore-scripts
+        shell: pwsh
+
+      # A profile is a directory with a manifest listing its bundle layers. This
+      # is the layout `dsh plugin add` produces, minus pnpm: the package is
+      # linked into the profile's node_modules and named in the manifest.
+      - name: Build a profile that lists this plugin as a bundle
+        run: |
+          $root = (Get-Location).Path
+          $profile = Join-Path $env:RUNNER_TEMP "dsh-profiles\ci"
+          New-Item -ItemType Directory -Force -Path (Join-Path $profile "node_modules") | Out-Null
+
+          @{
+            name = "dsh-profile-ci"
+            private = $true
+            dependencies = @{}
+            dsh = @{ profile = @{ bundles = @("@deepseek-ai/dsh-base", "dsh-feishu-beacon") } }
+          } | ConvertTo-Json -Depth 6 | Set-Content -Path (Join-Path $profile "package.json") -Encoding utf8
+
+          # The host packages the host half imports. In a real installation this
+          # closure comes from dsh itself, mounted at the profile root.
+          $dshRoot = Join-Path (npm root -g) "@deepseek-ai"
+          New-Item -ItemType Junction -Path (Join-Path $profile "node_modules\@deepseek-ai") -Target $dshRoot | Out-Null
+          New-Item -ItemType Junction -Path (Join-Path $profile "node_modules\dsh-feishu-beacon") -Target $root | Out-Null
+
+          Add-Content -Path $env:GITHUB_ENV -Value "DSH_PROFILE_CI=$profile"
+          Add-Content -Path $env:GITHUB_ENV -Value "DSH_CHECKOUT=$(Join-Path (npm root -g) '@deepseek-ai\dsh')"
+        shell: pwsh
+
+      - name: The profile composes this plugin's layer
+        run: node test/profile-check.mjs ci "$env:DSH_CHECKOUT"
+        shell: pwsh
+
+      - name: The installed package resolves and its host half loads
+        run: node test/install-check.mjs "$env:DSH_PROFILE_CI" dsh-feishu-beacon
+        shell: pwsh
