@@ -1,0 +1,61 @@
+{
+  "name": "dsh-feishu-beacon",
+  "version": "0.1.0",
+  "description": "DSH plugin that pushes agent progress and human-attention events to a Feishu (Lark) custom-bot webhook",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "bundle",
+    "feishu",
+    "lark",
+    "notifications"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "license": "MIT",
+  "author": "dsh-feishu-beacon contributors",
+  "engines": {
+    "node": ">=20.10.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jiangdunchun/dsh-feishu-beacon.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jiangdunchun/dsh-feishu-beacon/issues"
+  },
+  "homepage": "https://github.com/jiangdunchun/dsh-feishu-beacon#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "node test/no-cjk.mjs && node test/smoke.mjs && node test/client-smoke.mjs",
+    "check": "node --check lib/index.js && node --check lib/client.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  }
+}

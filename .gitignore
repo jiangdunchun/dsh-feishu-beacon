@@ -1,0 +1,46 @@
+# Dependency trees. The local development junction
+# node_modules/@deepseek-ai -> $DSH_HOME/profiles/node_modules/@deepseek-ai
+# lives in here and points at this machine's profile closure, so it must never
+# be committed or published.
+node_modules/
+
+# Package manager and build noise.
+pnpm-debug.log*
+npm-debug.log*
+yarn-error.log*
+*.tgz
+
+# npm pack cache, when a pack is run with a workspace-local cache.
+.npm-cache/
+
+# Editor and OS noise.
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local scratch space. `restart-harness.mjs` is a per-machine boot helper for
+# the process that serves the Web GUI, the task brief is kept beside the plugin
+# rather than published with it, and `.community/` holds checkouts of the
+# community registries used while preparing a submission.
+tmp/
+*.local
+restart-harness.mjs
+REPRODUCE-dsh-feishu-beacon.md
+.community/
+fetch-doc.mjs
+
+# The workspace-local git configuration (a safe.directory exception for this
+# checkout, which is owned by BUILTIN\Administrators).
+.gitconfig
+
+# Credentials. A real Feishu webhook URL, a signing secret, or a registry token
+# must never be committed: keep runtime credentials in $DSH_HOME/settings.yaml,
+# and publishing tokens in a local file named like one of these.
+.env
+.env.*
+*.secret
+.npm-token
+.npmrc
+webhook
+webhook.*

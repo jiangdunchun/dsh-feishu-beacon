@@ -1,0 +1,22 @@
+# The dsh-feishu-beacon bundle layer: one host row carrying the tool registry,
+# the global session-event hooks, the settings namespace, and the two HTTP
+# routes the settings page talks to.
+#
+# This `config:` block is the composition BASE layer. Anything the settings page
+# writes lands in $DSH_HOME/settings.yaml under the `dsh-feishu-beacon:` section
+# and overrides these values field by field. Keep real webhook URLs OUT of this
+# file: it ships inside the npm tarball.
+
+- insert:
+    - id: dsh-feishu-beacon
+      name: dsh-feishu-beacon
+      config:
+        webhookUrl: ''
+        secret: ''
+        enabled: true
+        prefix: ''
+        notifyQuestion: true
+        notifyApproval: true
+        notifyError: true
+        maxChars: 1800
+        publicUrl: ''
