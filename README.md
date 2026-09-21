@@ -1,10 +1,45 @@
 # dsh-feishu-beacon
 
+[![npm](https://img.shields.io/npm/v/dsh-feishu-beacon)](https://www.npmjs.com/package/dsh-feishu-beacon)
+[![license](https://img.shields.io/npm/l/dsh-feishu-beacon)](LICENSE)
+[![downloads](https://img.shields.io/npm/dm/dsh-feishu-beacon)](https://www.npmjs.com/package/dsh-feishu-beacon)
+[![stars](https://img.shields.io/github/stars/jiangdunchun/dsh-feishu-beacon)](https://github.com/jiangdunchun/dsh-feishu-beacon)
+
 Push agent progress and human-attention moments to a **Feishu (Lark) custom-bot webhook**.
 
 `dsh-feishu-beacon` is a [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin.
 It exists because a long agent run has two very different reporting problems, and one
 mechanism cannot solve both.
+
+```text
+dsh-feishu-beacon - PROGRESS
+Task: Fix the flaky deploy
+Workspace: beacon-project
+Time: 2026-09-21 14:20:03
+
+Step 2 of 4 done: the flake is a race in the retry timer, not the deploy script.
+```
+
+**Verified against dsh `0.1.5-rc.2`** (checked 2026-09-21). dsh is a developer preview and
+promises breaking changes, so read that as the version whose host-half contracts this
+plugin's code was actually read from, not as a compatibility promise for later releases.
+
+## Why this one, and not just any webhook
+
+The ecosystem already has Feishu notification plugins. The four decisions that differ here,
+each of which the obvious implementation gets wrong:
+
+| Decision | The obvious implementation | This plugin |
+|---|---|---|
+| When a turn ends | push every turn, completed included | push **only** `reason.kind === "error"` |
+| What a question push contains | one hardcoded line: "waiting for the user" | the **question text and every option**, with descriptions |
+| Event switches | one `enabled` flag for everything | `notifyQuestion` / `notifyApproval` / `notifyError`, independent |
+| Duplicate events | push again | dedupe by `callId` |
+
+The credential decision matters too: the webhook URL and signing secret live in the host's
+settings document and are never sent to the browser, so the settings page can write them and
+learn whether one is stored, but never reads them back. An implementation that keeps
+configuration in `localStorage` puts the bot secret in the browser.
 
 ## Why two layers
 
@@ -54,16 +89,47 @@ Messages longer than `maxChars` (default 1800) are truncated with an ellipsis.
 
 ## Install
 
-```powershell
-# From a local checkout (development) — the repository root is the package:
-dsh plugin --profile web add C:\path\to\dsh-feishu-beacon
+Requires the `dsh` CLI and a **web** profile. Nothing else: the package has no runtime
+dependencies beyond Node's built-in `fetch` and `node:crypto`.
 
-# From npm, once published:
+```powershell
+# From npm:
 dsh plugin --profile web add dsh-feishu-beacon
+
+# From a local checkout — the repository root is the package:
+dsh plugin --profile web add C:\path\to\dsh-feishu-beacon
 ```
 
-Then **restart the harness** (the client half only loads at boot) and open
-**Settings > Feishu beacon**.
+Then **restart the harness** — the client half (the settings section) only loads at boot —
+and open **Settings > Feishu beacon**.
+
+## First run
+
+The plugin is inert until it has a webhook URL: the `dsh_beacon` tool throws and no event is
+pushed. Three steps:
+
+1. In Feishu, create a **custom bot** in the group you want the messages in, and copy its
+   webhook URL. If the bot has signature verification enabled, copy the signing secret too.
+2. Paste both into **Settings > Feishu beacon**. The URL must be `https://`. Leave the
+   secret empty when the bot does not verify signatures.
+3. Press **Send test**. The message on your phone is the proof that the URL and the
+   signature are both right; `502` in the page means Feishu refused it.
+
+Then tell the agent when to report:
+
+> report your progress through dsh-feishu-beacon
+
+The event layer needs no instruction. Questions, approval requests, and failed turns are
+pushed from that point on.
+
+For a scripted install the same values can be written before boot, in
+`$DSH_HOME/settings.yaml`:
+
+```yaml
+dsh-feishu-beacon:
+  webhookUrl: https://open.feishu.cn/open-apis/bot/v2/hook/<id>
+  secret: ''
+```
 
 ### Verify the install actually landed
 
