@@ -1,6 +1,6 @@
 {
   "name": "dsh-feishu-beacon",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "DSH plugin that pushes agent progress and human-attention events to a Feishu (Lark) custom-bot webhook",
   "keywords": [
     "dsh",
