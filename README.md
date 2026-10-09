@@ -408,6 +408,16 @@ translating or making a label configurable touches one place.
 
 ## Changes
 
+### 0.2.1
+
+The release that reaches npm. Its content is identical to the `0.2.0` described below; the
+version number moved because `0.2.0` was staged on npm and direct publishing is refused
+over a staged version, while approving or rejecting that stage needs a WebAuthn security
+key. Renumbering is the way out that needs no security key.
+
+`0.2.0` is therefore not published and never will be. Do not read its absence as a
+withdrawn release.
+
 ### 0.2.0 — requires dsh 0.2
 
 **Breaking: this release does not load on dsh 0.1.x, and 0.1.1 does not load on 0.2.**

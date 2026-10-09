@@ -1,0 +1,86 @@
+# Publish a release to npm from CI.
+#
+# This workflow and `.github/workflows/ci.yml` answer different questions. `ci`
+# asks "does this commit work?" and runs on every push. This one asks "may this
+# artifact become a release?" and runs only when a human dispatches it, because
+# publishing is a decision and not a consequence of pushing.
+#
+# It authenticates with **trusted publishing** (OIDC), not a token:
+#
+#   - no `NPM_TOKEN` secret exists for this repository, so there is no
+#     long-lived credential to steal, and nothing to rotate;
+#   - npm verifies the workflow's short-lived OIDC identity against the trusted
+#     publisher configured for the package, so the workflow file, the repository
+#     and the package are bound together;
+#   - it keeps working after npm removes direct publishing for bypass-2FA tokens
+#     in January 2027.
+#
+# Configure the trusted publisher on npm before the first run: the package's
+# settings page -> Trusted publishing -> GitHub Actions, naming this repository
+# and this workflow file. Until that entry exists, the publish step fails with an
+# authorization error rather than a network one.
+
+name: publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Build the tarball and stop before publishing
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: publish to npm
+    runs-on: ubuntu-latest
+    # OIDC needs `id-token: write`; nothing else is granted.
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      # Node 22 satisfies trusted publishing's floor (22.14+) and ships the npm
+      # that performs the OIDC exchange.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Install the test-time host packages
+        run: npm install --no-audit --no-fund --ignore-scripts
+
+      # The same offline suite `ci` runs. Duplicated on purpose: a release must
+      # not depend on a green run that a later push could have invalidated.
+      - name: Zero CJK in shipped sources
+        run: node test/no-cjk.mjs
+
+      - name: Host smoke test
+        run: node test/smoke.mjs
+
+      - name: Client contract test
+        run: node test/client-smoke.mjs
+
+      # The tarball is checked here rather than trusted: `files` decides what a
+      # user receives, and a release is the last moment that mistake is cheap.
+      - name: Publish manifest
+        run: |
+          node -e "
+            const { execSync } = require('node:child_process');
+            const out = execSync('npm pack --dry-run --json', { encoding: 'utf8' });
+            const files = JSON.parse(out)[0].files.map((f) => f.path).sort();
+            const expected = ['LICENSE', 'README.md', 'cordis.patch.yml', 'lib/client.js', 'lib/index.js', 'package.json'];
+            const extra = files.filter((f) => !expected.includes(f));
+            const missing = expected.filter((f) => !files.includes(f));
+            if (extra.length > 0) throw new Error('tarball carries files it should not: ' + extra.join(', '));
+            if (missing.length > 0) throw new Error('tarball is missing: ' + missing.join(', '));
+            console.log('tarball carries exactly ' + files.length + ' files: ' + files.join(', '));
+          "
+
+      - name: Publish
+        if: ${{ !inputs.dry-run }}
+        run: npm publish --provenance --access public
