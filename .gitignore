@@ -13,6 +13,18 @@ yarn-error.log*
 # npm pack cache, when a pack is run with a workspace-local cache.
 .npm-cache/
 
+# The lockfile of the package manager this project does not use. The package is
+# installed by `dsh plugin add`, which drives pnpm; an npm lockfile would only
+# record the throwaway dependency tree the checkout's tests resolve against.
+package-lock.json
+
+# pnpm store, cache, and the native binary fetched into the checkout when no
+# global pnpm is on PATH.
+.pnpm-store/
+.pnpm-cache/
+.pnpm-state/
+.pnpm-*/
+
 # Editor and OS noise.
 .vscode/
 .idea/

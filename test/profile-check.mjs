@@ -62,15 +62,36 @@ if (dshRoot === undefined) {
   process.exit(2);
 }
 
-/** The dump-config module, whose filename carries the install's build hash. */
-function findDumpModule(root) {
+/**
+ * The dump-config module that actually exports `runDumpConfig`.
+ *
+ * The filename carries the install's build hash, so it cannot be hardcoded —
+ * and picking "the first `dump-config-*.js`" is not enough either: dsh 0.2.0
+ * ships several, and the alphabetically first one is a thin re-export whose
+ * `import` succeeds while the destructured binding is `undefined`. The module is
+ * therefore chosen by what it exports, not by what it is called.
+ *
+ * @param root - the dsh installation directory.
+ * @returns the module path, or undefined when none of them exports the entry.
+ */
+async function findDumpModule(root) {
   const lib = join(root, "lib");
   if (!existsSync(lib)) return undefined;
-  const match = readdirSync(lib).find((name) => name.startsWith("dump-config-") && name.endsWith(".js"));
-  return match === undefined ? undefined : join(lib, match);
+  const candidates = readdirSync(lib)
+    .filter((name) => name.startsWith("dump-config-") && name.endsWith(".js"))
+    .map((name) => join(lib, name));
+  for (const candidate of candidates) {
+    try {
+      const module = await import(pathToFileURL(candidate).href);
+      if (typeof module.runDumpConfig === "function") return candidate;
+    } catch {
+      /* A module that cannot load is not the entry point; try the next one. */
+    }
+  }
+  return undefined;
 }
 
-const dumpModule = findDumpModule(dshRoot);
+const dumpModule = await findDumpModule(dshRoot);
 const bundleManifest = join(dshRoot, "..", "dsh-base", "cordis.patch.yml");
 
 if (!existsSync(dshRoot)) {
@@ -78,7 +99,7 @@ if (!existsSync(dshRoot)) {
   process.exit(2);
 }
 if (dumpModule === undefined) {
-  process.stderr.write(`profile-check: no dump-config module under ${join(dshRoot, "lib")}; the dsh build layout changed\n`);
+  process.stderr.write(`profile-check: no dump-config module under ${join(dshRoot, "lib")} exports runDumpConfig; the dsh build layout changed\n`);
   process.exit(2);
 }
 
@@ -110,7 +131,11 @@ try {
 
 /** Whether one top-level row id appears in the dump. */
 const hasRow = new RegExp(`^- id: dsh-feishu-beacon$`, "m").test(text);
-const hasLayer = /^# == dsh-feishu-beacon$/m.test(text);
+// The heading carries a ", patched by <layer>" suffix whenever the profile or a
+// later bundle overrides a row in this layer, which any real installation does.
+// Anchoring the name to the end of the line therefore only passes on a profile
+// that never sets a single option.
+const hasLayer = /^# == dsh-feishu-beacon(?![A-Za-z0-9._-])/m.test(text);
 const hasConfig = /maxChars: 1800/.test(text);
 const hasToolRow = /^- id: tools$/m.test(text);
 const hasWebServer = /^- id: webserver$/m.test(text);

@@ -12,7 +12,7 @@ It exists because a long agent run has two very different reporting problems, an
 mechanism cannot solve both.
 
 ```text
-dsh-feishu-beacon - PROGRESS
+PROGRESS
 Task: Fix the flaky deploy
 Workspace: beacon-project
 Time: 2026-09-21 14:20:03
@@ -20,9 +20,17 @@ Time: 2026-09-21 14:20:03
 Step 2 of 4 done: the flake is a race in the retry timer, not the deploy script.
 ```
 
-**Verified against dsh `0.1.5-rc.2`** (checked 2026-09-21). dsh is a developer preview and
+**Verified against dsh `0.2.0-rc.2`** (checked 2026-09-30). dsh is a developer preview and
 promises breaking changes, so read that as the version whose host-half contracts this
 plugin's code was actually read from, not as a compatibility promise for later releases.
+
+That check is not a formality. Through dsh 0.1.5 the host half obtained its configuration
+from `ctx.settings.register`, which returns a scope the plugin reads and writes; 0.2.0
+removed that method in favour of a declared `Config` schema plus `ctx.settings.update`. A
+plugin written against the older contract cannot load at all on 0.2.0 — its `apply` throws
+on the first line — which is why the migration is the whole of the host half's settings
+work, and why `test/cordis-mount.mjs` mounts the export through a real registry rather than
+trusting a stub.
 
 ## Why this one, and not just any webhook
 
@@ -37,9 +45,10 @@ each of which the obvious implementation gets wrong:
 | Duplicate events | push again | dedupe by `callId` |
 
 The credential decision matters too: the webhook URL and signing secret live in the host's
-settings document and are never sent to the browser, so the settings page can write them and
-learn whether one is stored, but never reads them back. An implementation that keeps
-configuration in `localStorage` puts the bot secret in the browser.
+configuration — the profile patch the settings service owns — and are never sent to the
+browser, so the settings page can write them and learn whether one is stored, but never
+reads them back. An implementation that keeps configuration in `localStorage` puts the bot
+secret in the browser.
 
 ## Why two layers
 
@@ -65,7 +74,7 @@ event layer alone is too blunt to carry real progress.
 
 | Trigger | Title | Body |
 |---|---|---|
-| `dsh_beacon` tool call | `dsh-feishu-beacon - <PLAN\|PROGRESS\|DECISION\|DONE>` | the model's message, verbatim |
+| `dsh_beacon` tool call | `<PLAN\|PROGRESS\|DECISION\|DONE>`, or `prefix` + kind when a prefix is set | the model's message, verbatim |
 | `tool/call` = `ask_user_question` | `Answer needed` | every question, every option **with its description**, multi-select marked, plus a "back to your computer" line |
 | `approval/asked` | `Authorization needed` | `tool: <name>` and `reason: <reason>` (truncated to 300 characters) |
 | `turn/end` with `reason.kind === "error"` | `Turn failed` | `<message> (<code>)`, truncated to 500 characters |
@@ -76,16 +85,18 @@ this plugin was written to avoid. Only a failed turn is news.
 Every message carries a header:
 
 ```text
-dsh-feishu-beacon - PROGRESS
+PROGRESS
 Task: <session title, or the session directory's name>
 Workspace: <workspace registry title, or the directory's name>
 Time: 2026-01-31 09:14:02
-Open at: http://127.0.0.1:3080        <- optional, see `publicUrl`
+Open at: <the configured host URL, when there is one>    <- optional, see `publicUrl`
 
 <the message>
 ```
 
-Messages longer than `maxChars` (default 1800) are truncated with an ellipsis.
+The first line is the title alone. The package name is deliberately not part of it: the
+reader already knows which bot sent the message, and repeating it spends the line the
+summary belongs on. Set `prefix` to label a deployment that needs one.
 
 ## Install
 
@@ -110,8 +121,9 @@ pushed. Three steps:
 
 1. In Feishu, create a **custom bot** in the group you want the messages in, and copy its
    webhook URL. If the bot has signature verification enabled, copy the signing secret too.
-2. Paste both into **Settings > Feishu beacon**. The URL must be `https://`. Leave the
-   secret empty when the bot does not verify signatures.
+2. Paste both into **Settings > Feishu beacon**. The URL must be `https://`, and it is
+   stored as soon as you stop typing — there is no Save button. Leave the secret empty when
+   the bot does not verify signatures.
 3. Press **Send test**. The message on your phone is the proof that the URL and the
    signature are both right; `502` in the page means Feishu refused it.
 
@@ -122,14 +134,18 @@ Then tell the agent when to report:
 The event layer needs no instruction. Questions, approval requests, and failed turns are
 pushed from that point on.
 
-For a scripted install the same values can be written before boot, in
-`$DSH_HOME/settings.yaml`:
+For a scripted install the same values can be written before boot, as a `config:` block on
+this plugin's row in `$DSH_HOME/profiles/web/cordis.patch.yml`:
 
 ```yaml
-dsh-feishu-beacon:
-  webhookUrl: https://open.feishu.cn/open-apis/bot/v2/hook/<id>
-  secret: ''
+- id: dsh-feishu-beacon
+  config:
+    webhookUrl: https://open.feishu.cn/open-apis/bot/v2/hook/<id>
+    secret: ''
 ```
+
+Writing that row by hand is for provisioning only. Day to day the settings page owns it:
+dsh's settings service writes the edit back into that same profile patch.
 
 ### Verify the install actually landed
 
@@ -152,31 +168,33 @@ useless, so `false` is the right answer), then re-run `dsh plugin add`.
 
 ### Local development
 
-`lib/` imports `@deepseek-ai/dsh-tools` and `@deepseek-ai/schemastery`. Those resolve
-only inside the profile closure, so a checkout needs a junction to it:
+`lib/` imports `@deepseek-ai/dsh-tools` and `@deepseek-ai/schemastery`. At runtime the
+installation supplies them; for a checkout's own tests, install the published ones into
+the checkout's `node_modules`:
 
 ```powershell
-New-Item -ItemType Directory -Force node_modules | Out-Null
-New-Item -ItemType Junction -Path node_modules\@deepseek-ai `
-  -Target "$env:USERPROFILE\.dsh\profiles\node_modules\@deepseek-ai"
+npm install --ignore-scripts --cache .npm-cache
 ```
 
-The junction points at this machine's profile, so it must never be committed or
-published; `.gitignore` excludes `node_modules/`.
-
-To remove it, use `cmd /c rmdir node_modules\@deepseek-ai`. Do **not** use
-`Remove-Item -Recurse`: on some PowerShell versions that follows the junction and
-deletes the target's contents, which destroys your profile closure.
+`node_modules/` is excluded by `.gitignore`, and the local npm cache lives inside the
+checkout so the install does not need write access anywhere else.
 
 ## Configure
+
+The plugin owns no configuration store. It exports a `Config` schema — every field
+`.volatile()` — and dsh does the rest: the Loader resolves this row's config against that
+schema and hands it to `apply`, and the settings service writes edits back into the active
+profile's patch layer.
 
 Two layers, later wins:
 
 1. The `config:` block in this package's `cordis.patch.yml` — the composition base.
-2. The `dsh-feishu-beacon:` section in `$DSH_HOME/settings.yaml` — what the settings page writes.
+2. This row's `config:` in `$DSH_HOME/profiles/<profile>/cordis.patch.yml` — what the
+   settings page writes.
 
-`$DSH_HOME/settings.yaml` is watched and hot-published, and this plugin re-reads the
-resolved configuration before **every** push, so a change takes effect without a restart.
+A settings edit re-resolves the row and re-runs `apply`, so a change takes effect without
+a restart. Volatile fields arrive as live cells rather than plain values, which is why
+every read in the host half goes through one accessor.
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
@@ -193,15 +211,42 @@ resolved configuration before **every** push, so a change takes effect without a
 `notifyQuestion`, `notifyApproval`, and `notifyError` are three independent switches on
 purpose: turning off one class of event must not turn off the others.
 
+### The settings page
+
+The page follows the shipped settings pages rather than inventing a look: it uses the same
+design tokens and the same control geometry as `ui-primitives` (the switch capsule, the
+field stack, the input, the hint, and the primary action), so it tracks the theme and
+cannot drift from its neighbours.
+
+Three decisions are worth stating because they are deliberate:
+
+- **Every on/off variable is a switch** (`role="switch"`, `aria-checked`), not a checkbox.
+- **Nothing is staged behind a save.** Typing debounces briefly and then writes; a switch
+  writes at once. There is no Save button, because a save step would let the page show a
+  value the host does not hold — and a webhook URL is exactly the setting a user tries and
+  then walks away from. The fields are grouped under *Connection*, *Messages*, and
+  *Notifications*, and each applied edit reports itself in a status line.
+- **`Send test` is the only button.** Sending a message is not a configuration change, so
+  it is the one action that is not an edit. It flushes any pending edit first and then
+  tests with what the page shows.
+
+A refused write keeps its text on screen and reports the host's own message, so the user
+can correct it instead of retyping it.
+
 ### Credentials
 
 `webhookUrl` and `secret` are declared `role("secret")`, so the settings service strips
 them from every wire-facing view. The settings page can write them and can learn whether
-one is stored, but never receives the value back. On the config route:
+one is stored, but never receives the value back — which is why a credential field shows
+`stored` or `not set` rather than a value. On the config route:
 
 - an **empty** credential string means "keep the stored value", so a write-only form
   cannot wipe a secret by accident;
-- clearing is explicit, through `clearWebhook: true` or `clearSecret: true`.
+- clearing is explicit, through `clearWebhook: true` or `clearSecret: true`, which travels
+  to the settings service as a declarative `unset`. That matters because "empty" and
+  "unset" are different stored states: `unset` falls back to the composition default,
+  while an empty string is a value. The page offers `Clear` beside a credential only while
+  one is actually stored.
 
 ## The `dsh_beacon` tool
 
@@ -222,12 +267,15 @@ The settings page talks to the host through two routes:
 | Route | Method | Purpose |
 |---|---|---|
 | `/api/dsh-feishu-beacon/config` | `GET` | Redacted configuration view. Never contains a credential. |
-| `/api/dsh-feishu-beacon/config` | `POST` | Apply a patch. `400` for a non-`https://` webhook URL; `405` for other methods. |
+| `/api/dsh-feishu-beacon/config` | `POST` | Apply a patch through the settings service. `400` for a non-`https://` webhook URL; `405` for other methods. |
 | `/api/dsh-feishu-beacon/test` | `POST` | Send one test message. `502` when the webhook is unset or Feishu rejects the message. |
+
+The `POST` body is a settings patch: plain fields merge, `clearWebhook` / `clearSecret`
+unset a stored credential, and an empty credential string is ignored.
 
 ## Tests
 
-All three run without a real harness and without touching the network.
+The first three run without a real harness and without touching the network.
 
 ```powershell
 node test/no-cjk.mjs          # every shipped file is pure ASCII (no CJK)
@@ -237,25 +285,52 @@ node --check lib/index.js
 node --check lib/client.js
 ```
 
+`test/smoke.mjs` starts a local HTTP server that stands in for the Feishu webhook and
+records what it receives. It drives the plugin through a hand-built `ctx`, but it does not
+invent the configuration contract: it stores a patch, resolves it against the plugin's own
+exported `Config` schema, and re-applies the plugin — the same order the runtime uses — so
+what it asserts on is a row the plugin was actually handed.
+
+Two more checks read the installed profile rather than this package, which is how you
+prove the plugin really loaded there:
+
+```powershell
+node test/install-load.mjs web         # the profile link resolves and the host half applies
+node test/cordis-mount.mjs web         # a real Cordis registry mounts and re-applies the export
+node test/pack-install-check.mjs       # the published file set composes into a profile
+```
+
+`test/pack-install-check.mjs` stages a throwaway `$DSH_HOME` under `tmp/` and copies in
+**only the files `package.json` publishes**, then composes that profile — so a file `files`
+forgets to ship fails here rather than on a user's machine. It is spelled out separately
+because `test/profile-check.mjs` composes the *real* harness home, which rewrites its
+`cordis.yml`; that check therefore cannot run from a confined shell, while this one can.
+
+`test/cordis-mount.mjs` is the one that pins the plugin *shape*: it mounts the package's
+export through an actual `Context`, so the registry reads `Config` off it and validates the
+row config exactly as dsh does. It also mounts the pre-0.2 shape — the one that called
+`ctx.settings.register` — and requires that to fail, so the check cannot quietly stop
+testing anything.
+
+One check talks to a **running** harness, so it needs no fixtures and cannot run in CI:
+
+```powershell
+node test/live-contract.mjs            # defaults to http://127.0.0.1:3080
+node test/live-contract.mjs http://127.0.0.1:3080
+```
+
+`test/live-contract.mjs` is the only check that exercises a booted instance: that the two
+routes are actually mounted on the webserver, that the redacted view has the documented
+shape, that the credentials stored in the profile patch never appear in a response, and
+that the refusal paths (`405`, `400` for a bad body, `400` for a non-`https://` webhook)
+hold on the wire.
+
 There is also one test that is *supposed* to touch the network, for the final
 end-to-end confirmation on a real phone:
 
 ```powershell
 node test/live-check.mjs https://open.feishu.cn/open-apis/bot/v2/hook/<id> [signing-secret]
 ```
-
-And one check that reads the installed profile rather than this package, which is how
-you prove the bundle actually loaded:
-
-```powershell
-node test/profile-check.mjs web
-```
-
-`test/smoke.mjs` starts a local HTTP server that stands in for the Feishu webhook and
-records what it receives. It drives the plugin through a hand-built `ctx` and — this
-matters — asserts against the settings scope that `apply` itself created, captured from
-the `settings.register` stub. Asserting against a scope built by the test would only
-test the test.
 
 ## Feishu specifics
 
@@ -310,13 +385,17 @@ dsh-feishu-beacon/
 ├── LICENSE
 ├── .gitignore
 ├── lib/
-│   ├── index.js          host half: transport, event layer, tool, settings, routes
+│   ├── index.js          host half: transport, event layer, tool, Config, routes
 │   └── client.js         client half: the settings section
 └── test/
     ├── smoke.mjs          host smoke test
     ├── client-smoke.mjs   client contract test
     ├── no-cjk.mjs         the zero-CJK enforcement test
+    ├── cordis-mount.mjs   real-registry mount check
+    ├── install-load.mjs   installed-profile load check
+    ├── live-contract.mjs  running-harness contract check (needs a booted instance)
     ├── profile-check.mjs  composed-profile acceptance check
+    ├── pack-install-check.mjs  publish-list packaging check
     └── live-check.mjs     one-shot real-webhook check (not published)
 ```
 
@@ -326,6 +405,39 @@ the repository. Verify with `npm pack --dry-run`.
 
 Every user-visible and model-visible string lives in a `MESSAGES` block in each half, so
 translating or making a label configurable touches one place.
+
+## Changes
+
+### 0.2.0 — requires dsh 0.2
+
+**Breaking: this release does not load on dsh 0.1.x, and 0.1.1 does not load on 0.2.**
+The host half took its configuration from `ctx.settings.register`, which returns a scope
+the plugin reads and writes; 0.2.0 removed that method. The plugin now exports a `Config`
+schema — every field `.volatile()` — and writes edits through `ctx.settings.update`, which
+is the shape the 0.2 loader resolves a row against.
+
+Configuration moved with it: the settings service stores this row's values in the active
+profile's patch layer (`$DSH_HOME/profiles/<profile>/cordis.patch.yml`), not in
+`settings.yaml`.
+
+The pushed message format changed:
+
+- the first line is the title alone — `PROGRESS`, `TEST` — instead of
+  `dsh-feishu-beacon - PROGRESS`. Set `prefix` to label a deployment;
+- `Send test` assembles through the same function a milestone does, so `prefix` and the
+  `maxChars` budget apply to it too.
+
+The settings page was rebuilt on the settings design system, and now:
+
+- every on/off variable is a switch (`role="switch"`), not a checkbox;
+- every edit applies itself — there is no Save button. Typing debounces briefly, a switch
+  writes at once, and a refused write keeps its text and reports the host's message;
+- `Send test` is the only button.
+
+### 0.1.1
+
+Initial published release: the `dsh_beacon` tool, the three event hooks, the redacted
+settings section, and the two HTTP routes, verified against dsh `0.1.5-rc.2`.
 
 ## License
 
