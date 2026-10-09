@@ -48,6 +48,10 @@ dsh plugin --profile web add dsh-feishu-beacon
 
 ### 1. 在飞书里创建机器人
 
+飞书官方文档有完整的图文步骤——自定义机器人的设置入口在哪、如何复制 Webhook 地址、签名校验怎么工作：[自定义机器人使用指南](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot?lang=zh-CN)。
+
+简版步骤：
+
 1. 打开你想接收通知的飞书群。
 2. **设置 → 群机器人 → 添加机器人 → 自定义机器人**。
 3. 起个名字，复制它给出的 **Webhook 地址**。

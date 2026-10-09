@@ -56,6 +56,13 @@ won't show it yet.
 
 ### 1. Create the bot in Feishu
 
+Feishu's own guide covers this end to end — where the custom-bot settings live, how to copy
+the webhook URL, and how signature verification works:
+[Feishu: custom bot guide](https://open.feishu.cn/document/client-docs/bot-v3/add-custom-bot?lang=zh-CN)
+(the page is in Chinese).
+
+The short version:
+
 1. Open the Feishu group you want the notifications in.
 2. **Settings → Bots → Add bot → Custom bot**.
 3. Give it a name, and copy the **webhook URL** it shows you.
