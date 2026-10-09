@@ -304,6 +304,19 @@ If you publish by hand instead, note two traps:
 
 ### Changes
 
+#### 0.2.2
+
+Documentation only; no behaviour changed.
+
+The README was rewritten for the person installing the plugin rather than for someone
+reading the source: what lands on your phone, the four setup steps, what each setting means,
+troubleshooting, and uninstalling. Developer material moved to the end.
+
+`README.zh.md` is a full Chinese translation, cross-linked from both files.
+
+The setup step now links Feishu's own custom-bot guide, so the Feishu side is documented by
+the people who own it.
+
 #### 0.2.1
 
 The release that reaches npm. Its content is identical to the `0.2.0` described below; the
