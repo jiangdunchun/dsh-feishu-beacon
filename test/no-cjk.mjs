@@ -29,6 +29,7 @@ const TARGETS = [
   "package.json",
   "cordis.patch.yml",
   "README.md",
+  "README.zh.md",
   "LICENSE",
   ".gitignore",
   "lib/index.js",
@@ -46,6 +47,15 @@ const TARGETS = [
   ".github/workflows/ci.yml"
 ];
 
+/**
+ * The one exception, named rather than implied.
+ *
+ * A Chinese README is CJK on purpose, so the rule cannot apply to it. It is
+ * still listed so the scan proves the file exists — the exception is about its
+ * contents, not about skipping it.
+ */
+const CJK_ALLOWED = new Set(["README.zh.md"]);
+
 const offenders = [];
 
 for (const target of TARGETS) {
@@ -62,6 +72,7 @@ for (const target of TARGETS) {
     continue;
   }
   const lines = readFileSync(absolute, "utf8").split(/\r?\n/);
+  if (CJK_ALLOWED.has(target)) continue;
   lines.forEach((line, index) => {
     if (CJK.test(line)) offenders.push({ target, line: index + 1, text: line });
   });

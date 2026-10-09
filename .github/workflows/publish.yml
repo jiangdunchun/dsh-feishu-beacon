@@ -73,7 +73,7 @@ jobs:
             const { execSync } = require('node:child_process');
             const out = execSync('npm pack --dry-run --json', { encoding: 'utf8' });
             const files = JSON.parse(out)[0].files.map((f) => f.path).sort();
-            const expected = ['LICENSE', 'README.md', 'cordis.patch.yml', 'lib/client.js', 'lib/index.js', 'package.json'];
+            const expected = ['LICENSE', 'README.md', 'README.zh.md', 'cordis.patch.yml', 'lib/client.js', 'lib/index.js', 'package.json'];
             const extra = files.filter((f) => !expected.includes(f));
             const missing = expected.filter((f) => !files.includes(f));
             if (extra.length > 0) throw new Error('tarball carries files it should not: ' + extra.join(', '));
