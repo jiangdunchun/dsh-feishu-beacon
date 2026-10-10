@@ -325,6 +325,23 @@ If you publish by hand instead, note two traps:
 
 ### Changes
 
+#### 0.3.0
+
+Messages are sent as **interactive cards** by default: a coloured header that names the
+event, a quiet metadata line, and a rule before the body. The colour is the point — a
+failed turn is red, a decision orange, done green, progress blue — so you know what a
+notification is before reading it.
+
+The new **Message format** setting selects `card` or `text`. `text` restores the old plain
+output. **A refused card falls back to text**, so a group that does not accept cards still
+receives every message; `Send test` reports when that happens.
+
+**Max characters** now defaults to `3000` (was `1800`), because a card carries more before
+it stops being readable on a phone.
+
+Card bodies are markdown, so the model's own punctuation is escaped — an unbalanced `**` in
+a milestone would otherwise swallow the rest of the message.
+
 #### 0.2.2
 
 Documentation only; no behaviour changed.
