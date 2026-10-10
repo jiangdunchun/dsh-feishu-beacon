@@ -34,6 +34,9 @@ Step 2 of 4 done: the flake is a race in the retry timer, not the deploy script.
 | The agent needs authorization for a sensitive action | `Authorization needed`, with the tool name and the reason |
 | A run fails | `Turn failed`, with the error |
 
+Each one arrives as an interactive card with a colour that says what it is at a glance, or
+as plain text if you prefer — see [About "Message format"](#about-message-format).
+
 **A successful run notifies you of nothing.** If you finish a task and your phone stays
 quiet, that is the plugin working: reporting every completed run is noise, and this plugin
 exists to avoid it.
@@ -108,7 +111,8 @@ nothing to restart.
 | **Notify on failed turns** | Push when a run fails. |
 | **Title prefix** | Prepended to every title, so you can tell deployments apart — e.g. `[HOME-PC] PROGRESS`. |
 | **Host URL in messages** | Adds an `Open at:` line pointing back at your harness. See below. |
-| **Max characters** | Whole-message limit, `1800` by default. Longer messages are cut with `...`. |
+| **Max characters** | Whole-message limit, `3000` by default. Longer messages are cut with `...`. |
+| **Message format** | `card` (default) or `text`. See below. |
 | **Signing secret** | Only if your bot verifies signatures. |
 | **Webhook URL** | The bot's webhook. |
 
@@ -118,6 +122,23 @@ others alone.
 Both credentials show **stored** or **not set** rather than their value, and `Clear` appears
 beside one only while something is stored. Your webhook and secret are kept on the harness
 and are never sent back to the browser.
+
+### About "Message format"
+
+Messages arrive either as an **interactive card** or as plain text.
+
+- **`card`** (default) — a coloured header bar, the task and timestamp on a quiet line, then
+  the message. The colour tells you what the notification is before you read it: red for a
+  failure, orange for a decision, green for done, blue for progress.
+- **`text`** — everything in one plain block, the way earlier versions sent it.
+
+You do not have to pick correctly. With `card`, if your group refuses an interactive card,
+the plugin **resends the same message as text**, so a formatting problem never costs you the
+notification. `Send test` tells you when that happened — the message still arrived, but the
+page says the card was not accepted, and you can switch to `text` to stop trying.
+
+Use `text` if you want the plainest possible output, or if the extra request on a refused
+card is unwelcome.
 
 ### About "Host URL in messages"
 
@@ -167,7 +188,7 @@ That address isn't reachable from the device you read the message on. See
 [About "Host URL in messages"](#about-host-url-in-messages).
 
 **Messages are cut off.**
-They are truncated at **Max characters** (1800 by default). Raise it if you want more, but
+They are truncated at **Max characters** (3000 by default). Raise it if you want more, but
 note that very long messages are less useful on a phone, which is the point of this plugin.
 
 ## Known limits

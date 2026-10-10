@@ -3,8 +3,8 @@
 # routes the settings page talks to.
 #
 # This `config:` block is the composition BASE layer. Anything the settings page
-# writes lands in $DSH_HOME/settings.yaml under the `dsh-feishu-beacon:` section
-# and overrides these values field by field. Keep real webhook URLs OUT of this
+# writes lands on this row in the active profile's cordis.patch.yml and
+# overrides these values field by field. Keep real webhook URLs OUT of this
 # file: it ships inside the npm tarball.
 
 - insert:
@@ -18,5 +18,10 @@
         notifyQuestion: true
         notifyApproval: true
         notifyError: true
-        maxChars: 1800
+        # A card carries more before it stops being readable on a phone, so the
+        # budget is wider than the plain-text default it replaced.
+        maxChars: 3000
+        # `card` sends an interactive card and falls back to plain text if the
+        # group refuses one. Set `text` to skip the card entirely.
+        format: card
         publicUrl: ''

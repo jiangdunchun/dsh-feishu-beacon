@@ -321,7 +321,8 @@ function sampleView(overrides) {
     enabled: true,
     prefix: "",
     publicUrl: "",
-    maxChars: 1800,
+    maxChars: 3000,
+    format: "card",
     notifyQuestion: true,
     notifyApproval: true,
     notifyError: true,
@@ -437,6 +438,25 @@ const maxCharsInput = findAll(edits.form, (element) => element.type === "input")
   .find((element) => element.props.id === "dsh-feishu-beacon-max-chars");
 maxCharsInput.props.onChange({ target: { value: "900" } });
 equal(edits.calls.at(-1), ["text", "maxChars", "900"], "the budget field reports its raw text");
+
+// The format field only forwards the two values the route accepts, so a typo
+// cannot be written and then silently reverted.
+const formatInput = findAll(edits.form, (element) => element.type === "input")
+  .find((element) => element.props.id === "dsh-feishu-beacon-format");
+ok(formatInput !== undefined, "the message format has its own field");
+equal(formatInput.props.value, "card", "the format field shows the default");
+formatInput.props.onChange({ target: { value: "text" } });
+equal(edits.calls.at(-1), ["text", "format", "text"], "choosing text is reported");
+formatInput.props.onChange({ target: { value: "  CARD  " } });
+equal(edits.calls.at(-1), ["text", "format", "card"], "the value is normalized before it is reported");
+const beforeInvalid = edits.calls.length;
+formatInput.props.onChange({ target: { value: "cards" } });
+equal(edits.calls.length, beforeInvalid, "an unsupported format is not reported at all");
+
+const cardView = renderForm(sampleView({ format: "text" })).form;
+const cardFormatInput = findAll(cardView, (element) => element.type === "input")
+  .find((element) => element.props.id === "dsh-feishu-beacon-format");
+equal(cardFormatInput.props.value, "text", "the format field shows what the host holds");
 
 ok(findByType(form, "input") !== undefined, "the form renders inputs");
 ok(findByType(form, "button") !== undefined, "the form renders buttons");

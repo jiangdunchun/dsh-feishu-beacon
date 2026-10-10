@@ -166,7 +166,8 @@ const baseConfig = readBaseConfig(join(packageRoot, "cordis.patch.yml"));
 ok(baseConfig !== undefined, "the bundle patch carries a config base");
 const baseResolved = plugin.Config(baseConfig ?? {});
 ok(baseResolved?.enabled?.get() === true, "the composition base resolves enabled:true");
-ok(baseResolved?.maxChars?.get() === 1800, "the composition base resolves maxChars:1800");
+ok(baseResolved?.maxChars?.get() === 3000, "the composition base resolves maxChars:3000");
+ok(baseResolved?.format?.get() === "card", "the composition base defaults to the card format");
 ok(baseResolved?.webhookUrl?.get() === "", "the composition base ships no webhook URL");
 
 const typedBase = plugin.Config({ ...baseConfig, notAField: 1 });
