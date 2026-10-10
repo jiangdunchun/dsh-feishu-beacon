@@ -325,7 +325,7 @@ If you publish by hand instead, note two traps:
 
 ### Changes
 
-#### 0.3.0
+#### 0.2.3
 
 Messages are sent as **interactive cards** by default: a coloured header that names the
 event, a quiet metadata line, and a rule before the body. The colour is the point — a
