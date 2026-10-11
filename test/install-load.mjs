@@ -63,10 +63,17 @@ function makeCtx() {
     listeners: [],
     routes: new Map(),
     effects: [],
-    writes: []
+    writes: [],
+    commands: new Map()
   };
   const ctx = {
     tools: { register: (tool) => state.tools.set(tool.name, tool) },
+    commands: {
+      register: (definition) => {
+        state.commands.set(definition.name, definition);
+        return () => state.commands.delete(definition.name);
+      }
+    },
     on: (event, handler) => state.listeners.push([event, handler]),
     effect: (factory) => state.effects.push(factory),
     // The live webserver exposes `unregister`, which the mount helper calls
@@ -167,6 +174,8 @@ for (const factory of state.effects) {
 const routePaths = [...state.routes.keys()];
 ok(routePaths.includes("/api/dsh-feishu-beacon/config"), "apply mounts the config route");
 ok(routePaths.includes("/api/dsh-feishu-beacon/test"), "apply mounts the test route");
+ok(state.commands.has("beacon"), "apply registers the /beacon command");
+ok(typeof state.commands.get("beacon")?.handler === "function", "the command carries a handler");
 
 // The write path must go through the settings service. This is the regression
 // the 0.2 migration is about: an older build of this plugin obtained a

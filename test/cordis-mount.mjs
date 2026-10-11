@@ -99,7 +99,7 @@ const manifest = (await import(pathToFileURL(manifestPath).href, { with: { type:
 const pluginPath = join(manifestPath, "..", manifest.main ?? "lib/index.js");
 const plugin = await import(pathToFileURL(pluginPath).href);
 
-const state = { tools: new Map(), listeners: [], effects: [], routes: new Map(), writes: [] };
+const state = { tools: new Map(), listeners: [], effects: [], routes: new Map(), writes: [], commands: new Map() };
 const root = new core.Context();
 
 /**
@@ -147,6 +147,12 @@ await Promise.all([
     }
   }),
   provide("settings", settingsService),
+  provide("commands", {
+    register: (definition) => {
+      state.commands.set(definition.name, definition);
+      return () => state.commands.delete(definition.name);
+    }
+  }),
   provide("workspaceRegistry", { resolveByPath: async () => ({ title: "stub" }) })
 ]);
 

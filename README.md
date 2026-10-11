@@ -154,6 +154,27 @@ back to the harness.
 
 When neither this field nor `DSH_WEB_URL` is set, the line is simply left out.
 
+## The `/beacon` command
+
+Type `/beacon` in the composer for anything that does not need the model involved:
+
+| Command | What it does |
+|---|---|
+| `/beacon <message>` | Pushes that message to Feishu right now, as a progress milestone from the session you typed it in. |
+| `/beacon status` | Shows what the plugin is configured to do — whether a webhook is stored, the format, the length budget, and which notifications are on. |
+| `/beacon clear` | Removes the stored webhook URL and signing secret. Nothing is pushed until you set one again. |
+| `/beacon` | Shows that list. |
+
+A message pushed this way goes through the same format, transport, and fallback a real
+milestone does — it is not a separate path that can behave differently. That makes it the
+quickest way to check delivery without waiting for the agent to reach a milestone.
+
+`clear` exists so a machine you are stepping away from can be silenced from the keyboard.
+It is reversible: paste the webhook back into the settings page and pushes resume.
+
+Note the division of labour: `/beacon` pushes when **you** say so, and `dsh_beacon` is the
+tool the **agent** calls when it decides a milestone is worth telling you about.
+
 ## Upgrading from 0.1.x
 
 **0.2.x requires dsh 0.2, and 0.1.1 requires dsh 0.1.x — the two do not cross.** If you run
@@ -277,14 +298,27 @@ Two HTTP routes serve the settings section:
 patch: plain fields merge, `clearWebhook` / `clearSecret` unset a stored credential, and an
 empty credential string means "keep the stored value".
 
+The `/beacon` command is registered through the `commands` service, which is why that name
+is in the host half's `inject` list — a missing service keeps the whole row from loading.
+Its handler resolves subcommands (`clear`, `status`) before treating the input as a message,
+and returns a `{ kind, text }` result rather than throwing, so the composer renders the
+refusal instead of the command vanishing. Its effect disposer unregisters the command, which
+`test/smoke.mjs` asserts alongside the route teardown.
+
 `webhookUrl` and `secret` are declared `role("secret")`, so dsh strips them from every
 wire-facing view. Because "empty" and "unset" are different stored states, clearing uses a
-declarative `unset` rather than writing an empty string.
+declarative `unset` rather than writing an empty string — and `/beacon clear` and the
+settings page's `Clear` both go through that same path.
 
-Three Feishu details fail **silently** if you get them wrong: the envelope
-(`msg_type: "text"`, `content.text`), the success code (absent is fine, present and
-non-zero is a failure), and the signature (`HMAC-SHA256` keyed by `"<timestamp>\n<secret>"`,
-empty message, base64 digest). Other chat platforms differ in all three, so changing the
+The signature covers both formats: `HMAC-SHA256` keyed by `"<timestamp>\n<secret>"`, an
+empty message, and a base64 digest, sent as `timestamp` and `sign` query parameters. A card
+changes `msg_type` and the body, never the signing.
+
+Three Feishu details fail **silently** if you get them wrong: the text envelope
+(`msg_type: "text"`, `content.text`), the card envelope (`msg_type: "interactive"`, `card`),
+and the success code (absent is fine, present and non-zero is a failure — which is how a
+refused card is detected and why the fallback can work at all). Other chat platforms differ
+in all three, so changing the
 URL is not a port.
 
 ### Working on it

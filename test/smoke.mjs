@@ -115,12 +115,20 @@ function makeCtx(base) {
     /** Every settings write, in order, for tests that assert on the channel used. */
     writes: [],
     /** The resolved config object the currently applied row was given. */
-    resolved: undefined
+    resolved: undefined,
+    /** Every command definition `apply` registered, by name. */
+    commands: new Map()
   };
   const ctx = {
     tools: {
       register(tool) {
         state.tools.set(tool.name, tool);
+      }
+    },
+    commands: {
+      register(definition) {
+        state.commands.set(definition.name, definition);
+        return () => state.commands.delete(definition.name);
       }
     },
     on(event, handler) {
@@ -178,14 +186,21 @@ function makeCtx(base) {
 const WORKSPACE_CWD = "C:/work/beacon-project";
 
 /**
- * Install the effect-registered routes, the way the loader would.
+ * Run the effects `apply` registered, then keep their disposers.
  *
- * `state.effects` is reset before each re-apply, so the route map always holds
- * the handlers of the row that is currently applied — exactly one config route
- * and one test route, both closing over the current configuration.
+ * `state.effects` is reset before each re-apply, so the maps always hold what the
+ * row currently applied provides — exactly one config route, one test route, and
+ * one `/beacon` command, all closing over the current configuration.
+ *
+ * @returns the disposers, so a test can prove teardown unmounts everything.
  */
 function mountRoutes(state) {
-  for (const effect of state.effects) effect();
+  state.disposers = [];
+  for (const effect of state.effects) {
+    const dispose = effect();
+    if (typeof dispose === "function") state.disposers.push(dispose);
+  }
+  return state.disposers;
 }
 
 /** A fake IncomingMessage carrying an optional JSON body. */
@@ -377,6 +392,12 @@ function resolve() {
   state.effects.length = 0;
   state.listeners.clear();
   state.tools.clear();
+  state.commands.clear();
+  // A re-applied row replaces what the previous apply registered rather than
+  // stacking on it — the shell serves one handler per path, so a test harness
+  // that let registrations accumulate would be testing its own bookkeeping.
+  for (const dispose of state.disposers ?? []) dispose();
+  state.routes.clear();
   mod.apply(ctx, state.resolved);
   mountRoutes(state);
   return state.tools.get("dsh_beacon");
@@ -406,7 +427,8 @@ const tool = resolve();
 ok(state.tools.has("dsh_beacon"), "registers the dsh_beacon tool");
 ok((state.listeners.get("session/event") ?? []).length === 1, "hooks session/event once");
 ok(state.routes.size === 2, "registers exactly 2 routes", `registered: ${[...state.routes.keys()].join(", ")}`);
-equal(mod.inject, ["tools", "workspaceRegistry", "settings", "webServer"], "inject list");
+equal(mod.inject, ["tools", "workspaceRegistry", "settings", "webServer", "commands"], "inject list");
+ok(state.commands.has("beacon"), "registers the /beacon command");
 ok(mod.name === "dsh-feishu-beacon", "plugin name");
 ok(typeof mod.Config === "function" && mod.Config.type === "object",
   "exports the Config schema the settings service reads");
@@ -756,7 +778,96 @@ equal(textSends.length, 1, "the text format sends once, with no card to refuse")
 equal(payloadOf(textSends[0]).msg_type, "text", "the text format is plain text");
 await edit({ format: "card" });
 
-process.stdout.write("\n15. error containment\n");
+process.stdout.write("\n15. the /beacon command\n");
+await edit({ webhookUrl: BEACON_URL, prefix: "", enabled: true });
+
+/** Invoke the registered command the way the command runtime would. */
+const runBeacon = (rawInput) => state.commands.get("beacon").handler({
+  rawInput,
+  agent: { session: toolSession },
+  signal: undefined,
+  attachments: []
+});
+
+const commandDef = state.commands.get("beacon");
+equal(commandDef.name, "beacon", "the command is named beacon, so it is invoked as /beacon");
+ok(typeof commandDef.description === "string" && commandDef.description.length > 0,
+  "the command advertises a description for discovery");
+equal(commandDef.input?.hint, "message to push, or clear / status", "the command advertises an input hint");
+
+const noArgs = await runBeacon("");
+equal(noArgs.kind, "success", "an empty invocation answers rather than failing");
+contains(noArgs.text, "/beacon clear", "the empty invocation shows how the subcommands are spelled");
+
+const statusResult = await runBeacon("status");
+equal(statusResult.kind, "success", "status succeeds");
+contains(statusResult.text, "webhook: configured", "status reports the stored webhook");
+contains(statusResult.text, "format: card", "status reports the format");
+contains(statusResult.text, "questions on, approvals on, failures on", "status reports the switches");
+
+const beforeCommand = webhook.received.length;
+const pushed = await runBeacon("deploy is green");
+equal(pushed.kind, "success", "a message invocation succeeds");
+contains(pushed.text, "Pushed to Feishu", "the reply confirms delivery");
+equal(webhook.received.length, beforeCommand + 1, "the command pushed exactly one message");
+const commandText = payloadTextRaw(webhook.received.at(-1));
+contains(commandText, "deploy is green", "the pushed message carries the text after the command name");
+contains(commandText, "PROGRESS", "the command pushes as a progress milestone");
+contains(commandText, `Task: ${toolTitle}`, "the command push carries the session it came from");
+equal(isCard(webhook.received.at(-1)), true, "the command pushes through the normal format, not a side path");
+
+// A near-miss on a subcommand is a typo, and pushing it would spend a real
+// notification on the user's own mistake.
+const beforeTypo = webhook.received.length;
+const typo = await runBeacon("cleer");
+equal(typo.kind, "success", "an unknown single word is treated as a message, not an error");
+equal(webhook.received.length, beforeTypo + 1, "that word was pushed as a message");
+const nearMiss = await runBeacon("clear now please");
+equal(nearMiss.kind, "error", "a known subcommand with trailing text is refused");
+contains(nearMiss.text, "Unknown subcommand", "the refusal explains itself");
+equal(webhook.received.length, beforeTypo + 1, "the refusal pushed nothing");
+
+// Disabled is disabled, whichever entry point asks.
+await edit({ enabled: false });
+const disabledCommand = await runBeacon("should not go");
+equal(disabledCommand.kind, "error", "the command refuses while the master switch is off");
+contains(disabledCommand.text, "disabled", "the refusal names the switch");
+await edit({ enabled: true });
+
+process.stdout.write("\n16. the /beacon clear subcommand\n");
+const clearResult = await runBeacon("clear");
+equal(clearResult.kind, "success", "clear succeeds");
+contains(clearResult.text, "Cleared the stored webhook", "clear reports what it did");
+ok(!Object.hasOwn(state.config, "webhookUrl"), "clear unsets the stored webhook");
+ok(!Object.hasOwn(state.config, "secret"), "clear unsets the stored secret");
+const clearCommandWrite = state.writes.at(-1);
+equal(clearCommandWrite?.kind, "mutate", "clear travels as a declarative unset");
+equal(clearCommandWrite?.ops, [{ op: "unset", path: ["webhookUrl"] }, { op: "unset", path: ["secret"] }],
+  "clear unsets both credential paths");
+
+// A command that edits configuration rewrites the stored patch, exactly as the
+// settings route does, so the row has to be re-resolved before the next push —
+// that re-resolution is what publishes the new config to the plugin.
+await edit({});
+const pushWithoutWebhook = await runBeacon("after clear");
+equal(pushWithoutWebhook.kind, "error", "pushing without a webhook fails");
+contains(pushWithoutWebhook.text, "no webhookUrl configured", "the failure says what to set");
+await edit({ webhookUrl: BEACON_URL });
+
+process.stdout.write("\n17. teardown\n");
+// Re-apply so the disposers under test belong to the row currently mounted.
+await edit({});
+const disposers = state.disposers ?? [];
+ok(disposers.length >= 3, "routes and the command are registered through effects", String(disposers.length));
+ok(state.routes.size === 2, "the newly mounted row has both routes", String(state.routes.size));
+ok(state.commands.has("beacon"), "the newly mounted row has the command");
+for (const dispose of disposers) dispose();
+ok(state.routes.size === 0, "the effect disposers unmount the routes", `still mounted: ${[...state.routes.keys()].join(", ")}`);
+ok(!state.commands.has("beacon"), "the effect disposer unregisters the command");
+await edit({});
+ok(state.routes.size === 2, "re-applying after teardown mounts them again", String(state.routes.size));
+
+process.stdout.write("\n18. error containment\n");
 ok(state.logs.every(([level]) => level !== "error"), "event pushes never logged at error level");
 
 webhook.received.length = 0;

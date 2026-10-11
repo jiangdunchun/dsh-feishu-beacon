@@ -47,6 +47,7 @@ const VIEW_KEYS = [
   "notifyApproval",
   "notifyError",
   "maxChars",
+  "format",
   "publicUrl",
   "webhookConfigured",
   "secretConfigured"
