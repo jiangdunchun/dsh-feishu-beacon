@@ -41,6 +41,60 @@ as plain text if you prefer — see [About "Message format"](#about-message-form
 quiet, that is the plugin working: reporting every completed run is noise, and this plugin
 exists to avoid it.
 
+**And nothing is pushed at all until you ask for it, one task at a time.** While you are at
+the keyboard you do not need a phone notification, and the plugin cannot tell whether you
+have stepped away — only you can. So silence is the default, and messages go out only while
+a *watch* is open on the work in front of you. See
+[Watching a task](#watching-a-task).
+
+## Watching a task
+
+A watch is you saying "I am leaving this running; tell me what happens". It opens when you
+ask for it and closes by itself when the task is over, so you never have to remember to turn
+notifications off.
+
+**Ask in words, at the start of the task:**
+
+> notify me about progress and blockers
+> report your progress through dsh-feishu-beacon
+
+The agent recognises that and opens the watch. Or do it yourself, which is exact and needs
+no interpretation:
+
+```text
+/beacon on
+```
+
+Either way, from that moment on:
+
+| You receive | Until |
+|---|---|
+| every milestone the agent reports | the task ends |
+| every question it needs answered | the task ends |
+| every authorization request | the task ends |
+| a failure, if the task breaks | the task ends |
+
+**When the task ends, the watch ends with it.** The plugin closes it as soon as the agent
+hands control back to you — which means the work you asked to be told about is finished. A
+failure is the exception: it is pushed and *then* the watch closes, so a task that broke is
+the one thing that still reaches you.
+
+Asking the agent a question in the middle of a task — answering a decision it raised — does
+**not** end the watch. The agent is still working on the same task; it just needs you first.
+
+To stop early:
+
+```text
+/beacon off
+```
+
+### What a watch does not cover
+
+A watch is scoped to **one task — the work the agent does before it hands control back**.
+If you ask for a fresh change afterwards, that is a new task and notifications are silent
+again until you ask for them. This is deliberate: it is the only boundary the plugin can
+observe honestly, and it means "stop notifying me" never needs to be remembered.
+
 ## Before you start
 
 - The `dsh` CLI with a **web** profile.
@@ -160,8 +214,10 @@ Type `/beacon` in the composer for anything that does not need the model involve
 
 | Command | What it does |
 |---|---|
-| `/beacon <message>` | Pushes that message to Feishu right now, as a progress milestone from the session you typed it in. |
-| `/beacon status` | Shows what the plugin is configured to do — whether a webhook is stored, the format, the length budget, and which notifications are on. |
+| `/beacon on` | Watches this task. See [Watching a task](#watching-a-task). |
+| `/beacon off` | Stops watching. The only way reporting is ever turned off. |
+| `/beacon <message>` | Pushes that message to Feishu right now, as a progress milestone from the session you typed it in — and watches the task it belongs to. |
+| `/beacon status` | Shows what the plugin is configured to do — whether it is watching this session, whether a webhook is stored, the format, the length budget, and which notifications are on. |
 | `/beacon clear` | Removes the stored webhook URL and signing secret. Nothing is pushed until you set one again. |
 | `/beacon` | Shows that list. |
 
@@ -169,11 +225,13 @@ A message pushed this way goes through the same format, transport, and fallback 
 milestone does — it is not a separate path that can behave differently. That makes it the
 quickest way to check delivery without waiting for the agent to reach a milestone.
 
-`clear` exists so a machine you are stepping away from can be silenced from the keyboard.
-It is reversible: paste the webhook back into the settings page and pushes resume.
+`clear` removes the credentials, not the watch: it is what you run on a machine you are
+giving away or shutting down. To stop notifications on a machine you are still using, use
+`/beacon off`. `clear` is reversible — paste the webhook back into the settings page and
+pushes resume.
 
 Note the division of labour: `/beacon` pushes when **you** say so, and `dsh_beacon` is the
-tool the **agent** calls when it decides a milestone is worth telling you about.
+tool the **agent** calls — with your permission, which is what the watch records.
 
 ## Upgrading from 0.1.x
 
@@ -199,10 +257,17 @@ if your bot verifies signatures. A `502` in the page means Feishu itself refused
 message.
 
 **I got no notification.**
-First check whether you should have: a run that succeeds sends nothing. Then check the
-**Enabled** and the relevant **Notify on…** switches. If a run failed and you still heard
-nothing, the push itself failed — the harness log will carry a warning, never an error,
-because a failed notification must not break your session.
+The most likely reason is that nothing was watching. Pushes are silent until you ask for
+them for a task — run `/beacon status` and check the `watching this session` line. It reads
+`no` when the task is over, which is the normal state. Then check whether you should have
+been told at all: a run that succeeds sends nothing. Then check the **Enabled** and the
+relevant **Notify on…** switches. And if a run failed while a watch was open and you still
+heard nothing, the push itself failed — the harness log will carry a warning, never an
+error, because a failed notification must not break your session.
+
+**The agent says it cannot report because nothing is watching.**
+That is the plugin refusing to push while you are at the keyboard. Say you want progress
+reported for the task, or run `/beacon on`.
 
 **The notification arrives but the `Open at:` link doesn't open.**
 That address isn't reachable from the device you read the message on. See
@@ -358,6 +423,29 @@ If you publish by hand instead, note two traps:
   publish that `npm view` cannot see yet is not a failure — check again.
 
 ### Changes
+
+#### 0.2.4
+
+**Breaking: nothing is pushed until you ask for it.** A *watch* now gates every push, and it
+defaults to off. While you are at the keyboard a phone notification is noise, and the plugin
+cannot tell whether you have stepped away — only you can, so it no longer guesses.
+**Upgrading silences the plugin until you ask for reports on a task.** See
+[Watching a task](#watching-a-task).
+
+A watch opens when you ask for reports in words — the agent recognises it and records it on
+the session — or directly with `/beacon on`. It closes by itself when the task ends, which
+is when the agent hands control back. Answering a decision mid-task does not end it: the
+agent is still working, it just needs you first.
+
+A failure is pushed **before** the watch closes. That order is the whole point: a task that
+broke is exactly what you stepped away from, and a close that ran first would swallow it.
+
+The tool can open a watch and report; it can never close one. A model that decided to stop
+notifying you would leave you waiting in silence, so closing is reserved for you — in words
+or with `/beacon off`.
+
+`/beacon on`, `/beacon off`, and the watch line in `/beacon status` are new. `/beacon
+&lt;message&gt;` still pushes immediately and now also watches the task it belongs to.
 
 #### 0.2.3
 

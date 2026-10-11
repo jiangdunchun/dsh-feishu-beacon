@@ -248,13 +248,32 @@ async function callRoute(state, path, method, body) {
   return { status: res.record.status, json, raw: res.record.body };
 }
 
-/** A session stub shaped like the documented `session/event` callback argument. */
+/**
+ * A session stub shaped like the documented `session/event` callback argument.
+ *
+ * The watch state lives in the session log, so the stub keeps an append-only
+ * list and exposes the whole log through `events` — a watch decision recorded by
+ * one push is visible to the next, exactly as it is against a real session.
+ */
 function fakeSession(events) {
+  const appended = [];
   return {
     id: "session-1",
     header: { cwd: WORKSPACE_CWD },
-    events
+    appended,
+    get events() {
+      return [...events, ...appended];
+    },
+    append(type, data) {
+      appended.push({ type, data });
+      return { type, data };
+    }
   };
+}
+
+/** Every event on a session stub, oldest first, whether seeded or appended. */
+function sessionLogOf(session) {
+  return [...(session.events ?? [])];
 }
 
 /**
@@ -345,6 +364,22 @@ async function startWebhook() {
 /** Emit one session event into every registered hook. */
 function emit(state, session, event) {
   for (const listener of state.listeners.get("session/event") ?? []) listener(session, event);
+}
+
+/**
+ * Open the watch on a session the way a user would.
+ *
+ * Event pushes are silent until a session is watched, so every test that expects
+ * a question, approval, or failure to arrive has to watch the session first. It
+ * goes through the real `/beacon on` path rather than writing the event itself,
+ * so the tests exercise the mechanism they depend on.
+ */
+async function watchSession(state, session) {
+  const definition = state.commands.get("beacon");
+  if (definition === undefined) throw new Error("/beacon is not registered");
+  const result = await definition.handler({ rawInput: "on", agent: { session }, signal: undefined, attachments: [] });
+  if (result.kind !== "success") throw new Error(`could not watch the session: ${result.text}`);
+  return result;
 }
 
 /* --------------------------------------------------------------------- suite */
@@ -452,7 +487,11 @@ contains(disabledResult, "no webhookUrl configured", "tool throws while the webh
 ok(webhook.received.length === beforeTool, "no request was sent while unconfigured");
 
 await ctx.settings.update("dsh-feishu-beacon", { webhookUrl: BEACON_URL, maxChars: 1800 });
-const toolResult = await resolve().execute({ message: "Step 1 of 4 done: reproduced the flake.", kind: "progress" }, toolExec);
+const toolResult = await resolve().execute({
+  message: "Step 1 of 4 done: reproduced the flake.",
+  kind: "progress",
+  watch: true
+}, toolExec);
 ok(webhook.received.length === beforeTool + 1, "tool push reached the webhook");
 equal(toolResult, { kind: "progress", delivered: true }, "tool output value");
 const toolText = payloadTextRaw(webhook.received.at(-1));
@@ -479,6 +518,7 @@ const renderText = tool.output.render({}, { kind: "done" })[0].text;
 equal(renderText, "Pushed (done)", "tool output render text");
 
 process.stdout.write("\n3. ask_user_question push\n");
+process.stdout.write("\n3. silent until watched, then ask_user_question push\n");
 const questionSession = fakeSession([{ type: "session/title", data: { title: "Choose a storage engine" } }]);
 const questionCall = {
   type: "tool/call",
@@ -512,7 +552,11 @@ const questionCall = {
 };
 const beforeQuestion = webhook.received.length;
 emit(state, questionSession, questionCall);
-ok(await until(() => webhook.received.length === beforeQuestion + 1, "question push"), "question event pushed");
+await settle(40);
+equal(webhook.received.length, beforeQuestion, "an unwatched session pushes nothing at all");
+await watchSession(state, questionSession);
+emit(state, questionSession, questionCall);
+ok(await until(() => webhook.received.length === beforeQuestion + 1, "question push"), "question event pushed once watched");
 const questionText = payloadTextRaw(webhook.received.at(-1));
 contains(questionText, "Answer needed", "question title");
 contains(questionText, "Which storage engine should the beacon use?", "question body");
@@ -532,6 +576,7 @@ ok(webhook.received.length === beforeDuplicate, "the same callId never pushes tw
 
 process.stdout.write("\n5. approval push\n");
 const approvalSession = fakeSession([{ type: "session/title", data: { title: "Deploy to staging" } }]);
+await watchSession(state, approvalSession);
 const beforeApproval = webhook.received.length;
 emit(state, approvalSession, {
   type: "approval/asked",
@@ -545,6 +590,7 @@ contains(approvalText, "reason: The command writes outside the workspace.", "app
 
 process.stdout.write("\n6. failed turn push\n");
 const errorSession = fakeSession([{ type: "session/title", data: { title: "Migrate the schema" } }]);
+await watchSession(state, errorSession);
 const beforeError = webhook.received.length;
 emit(state, errorSession, {
   type: "turn/end",
@@ -556,6 +602,12 @@ const errorText = payloadTextRaw(webhook.received.at(-1));
 contains(errorText, "Turn failed", "error title");
 contains(errorText, "Provider returned 429", "error message");
 contains(errorText, "(RATE_LIMIT)", "error code");
+// The watch ends with the turn that carried it. Checking after the error push is
+// the point: a close that ran first would have swallowed the failure the user
+// stepped away from.
+ok(errorSession.events.some((event) => event.type === "beacon/unwatch"),
+  "the failed turn closed the watch, after pushing");
+const watchEventsBeforeCompleted = errorSession.appended.filter((event) => event.type === "beacon/unwatch").length;
 
 process.stdout.write("\n7. completed turn stays silent\n");
 const beforeCompleted = webhook.received.length;
@@ -571,11 +623,79 @@ emit(state, errorSession, {
 });
 await settle(40);
 ok(webhook.received.length === beforeCompleted, "completed and aborted turns push nothing");
+equal(errorSession.appended.filter((event) => event.type === "beacon/unwatch").length, watchEventsBeforeCompleted,
+  "an already-closed watch is not closed twice");
+
+process.stdout.write("\n7b. the watch lifecycle\n");
+// Silent by default: a fresh session with no watch pushes nothing, whatever the
+// switches say. This is the behaviour the whole feature exists for.
+const quietSession = fakeSession([{ type: "session/title", data: { title: "Unwatched" } }]);
+const beforeQuiet = webhook.received.length;
+emit(state, quietSession, {
+  type: "approval/asked",
+  data: { id: "approval-quiet", toolName: "pwsh", callId: "call-quiet", reason: "unwatched" }
+});
+emit(state, quietSession, {
+  type: "turn/end",
+  time: "2026-01-01T00:00:08.000Z",
+  data: { turn: 9, reason: { kind: "error", error: { message: "unwatched failure", code: "X" } } }
+});
+await settle(40);
+equal(webhook.received.length, beforeQuiet, "an unwatched session pushes nothing, approvals and failures included");
+
+// The tool can open a watch — that is how prose becomes a decision.
+const openedSession = fakeSession([{ type: "session/title", data: { title: "Opened by the tool" } }]);
+const openedExec = { agent: { session: openedSession }, callId: "call-open", signal: undefined };
+const beforeOpen = webhook.received.length;
+const refusedWithoutWatch = await state.tools.get("dsh_beacon")
+  .execute({ message: "nobody asked for this" }, openedExec)
+  .then(() => undefined, (error) => String(error?.message ?? error));
+contains(refusedWithoutWatch, "not watching this session", "an unwatched tool call says why it refused");
+equal(webhook.received.length, beforeOpen, "the refused tool call pushed nothing");
+const openedResult = await state.tools.get("dsh_beacon")
+  .execute({ message: "plan: four steps", kind: "plan", watch: true }, openedExec);
+equal(openedResult, { kind: "plan", delivered: true }, "watch:true opens the watch and pushes the first message");
+equal(webhook.received.length, beforeOpen + 1, "the opening message was pushed");
+ok(openedSession.events.some((event) => event.type === "beacon/watch"), "the watch was recorded on the session");
+
+// And once open, the event layer reports too.
+const beforeOpenedEvent = webhook.received.length;
+emit(state, openedSession, {
+  type: "approval/asked",
+  data: { id: "approval-open", toolName: "pwsh", callId: "call-open-2", reason: "watched" }
+});
+ok(await until(() => webhook.received.length === beforeOpenedEvent + 1, "watched approval"),
+  "a watched session pushes approvals");
+
+// A decision does not end the turn, so the watch survives it: the model parks on
+// the user rather than handing control back.
+const beforeDecision = webhook.received.length;
+await state.tools.get("dsh_beacon").execute({ message: "which way?", kind: "decision" }, openedExec);
+equal(webhook.received.length, beforeDecision + 1, "a decision milestone is pushed while watching");
+ok(openedSession.events.filter((event) => event.type === "beacon/unwatch").length === 0,
+  "a decision leaves the watch open, because the turn is still running");
+
+// The turn ending is what closes it.
+emit(state, openedSession, {
+  type: "turn/end",
+  time: "2026-01-01T00:00:20.000Z",
+  data: { turn: 11, reason: { kind: "completed" } }
+});
+await settle(20);
+ok(openedSession.events.some((event) => event.type === "beacon/unwatch"),
+  "the completed turn closed the watch");
+const beforeAfterClose = webhook.received.length;
+emit(state, openedSession, {
+  type: "approval/asked",
+  data: { id: "approval-after", toolName: "pwsh", callId: "call-after", reason: "after" }
+});
+await settle(40);
+equal(webhook.received.length, beforeAfterClose, "the closed watch stops the event layer again");
 
 process.stdout.write("\n8. signing\n");
 const signedTool = await edit({ secret: SECRET });
 const beforeSign = webhook.received.length;
-await signedTool.execute({ message: "signed push", kind: "decision" }, toolExec);
+await signedTool.execute({ message: "signed push", kind: "decision", watch: true }, toolExec);
 const signed = webhook.received.at(-1);
 ok(signed !== undefined && webhook.received.length === beforeSign + 1, "signed push reached the webhook");
 const signedUrl = new URL(`http://127.0.0.1${signed.url}`);
@@ -747,7 +867,7 @@ await edit({ webhookUrl: BEACON_URL, format: "card" });
 webhook.refuseCards(true);
 const beforeFallback = webhook.received.length;
 const fallbackTool = await edit({});
-const fallbackResult = await fallbackTool.execute({ message: "must still arrive", kind: "progress" }, toolExec).then(
+const fallbackResult = await fallbackTool.execute({ message: "must still arrive", kind: "progress", watch: true }, toolExec).then(
   (value) => value,
   (error) => String(error?.message ?? error)
 );
@@ -772,7 +892,7 @@ webhook.refuseCards(false);
 await edit({ format: "text" });
 const beforeText = webhook.received.length;
 const textTool = await edit({});
-await textTool.execute({ message: "no card at all", kind: "progress" }, toolExec);
+await textTool.execute({ message: "no card at all", kind: "progress", watch: true }, toolExec);
 const textSends = webhook.received.slice(beforeText);
 equal(textSends.length, 1, "the text format sends once, with no card to refuse");
 equal(payloadOf(textSends[0]).msg_type, "text", "the text format is plain text");
@@ -793,7 +913,7 @@ const commandDef = state.commands.get("beacon");
 equal(commandDef.name, "beacon", "the command is named beacon, so it is invoked as /beacon");
 ok(typeof commandDef.description === "string" && commandDef.description.length > 0,
   "the command advertises a description for discovery");
-equal(commandDef.input?.hint, "message to push, or clear / status", "the command advertises an input hint");
+equal(commandDef.input?.hint, "on / off / status / clear, or a message to push", "the command advertises an input hint");
 
 const noArgs = await runBeacon("");
 equal(noArgs.kind, "success", "an empty invocation answers rather than failing");
