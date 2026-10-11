@@ -30,9 +30,18 @@ Step 2 of 4 done: the flake is a race in the retry timer, not the deploy script.
 | When | What arrives |
 |---|---|
 | The agent reaches a milestone it judges worth telling you about | Its own message, titled `PLAN`, `PROGRESS`, `DECISION`, or `DONE` |
-| The agent needs an answer | `Answer needed`, with every question and every option, including each option's description |
-| The agent needs authorization for a sensitive action | `Authorization needed`, with the tool name and the reason |
+| The agent needs an answer | A `DECISION` card whose first line is `Answer needed`, with every question and every option, including each option's description |
+| The agent needs authorization for a sensitive action | A `DECISION` card whose first line is `Authorization needed`, with the tool name and the reason |
 | A run fails | `Turn failed`, with the error |
+
+**The card kinds are exactly four** — `PLAN` (the task, broken down), `PROGRESS` (a key step
+finished), `DECISION` (you have to act at your computer: choose something, or authorise
+something the agent cannot do), and `DONE` (what was delivered). Anything that needs you at
+the keyboard is a `DECISION`, whether it is a question or a permission prompt, and the line
+under the header says which.
+
+`Turn failed` is the one card outside that set, and it keeps a colour of its own: a run that
+broke is not a decision you can answer, and it must not be mistaken for one.
 
 Each one arrives as an interactive card with a colour that says what it is at a glance, or
 as plain text if you prefer — see [About "Message format"](#about-message-format).
@@ -53,47 +62,54 @@ A watch is you saying "I am leaving this running; tell me what happens". It open
 ask for it and closes by itself when the task is over, so you never have to remember to turn
 notifications off.
 
-**Ask in words, at the start of the task:**
+**Ask in one specific way — your instruction must contain the word `beacon`:**
 
-> notify me about progress and blockers
-> report your progress through dsh-feishu-beacon
+> beacon me about progress and blockers
+> report through dsh-feishu-beacon
+> keep me posted with beacon
 
-The agent recognises that and opens the watch. Or do it yourself, which is exact and needs
-no interpretation:
+That word is the entire trigger. The plugin checks your own message for it, so nothing is
+reported unless you said it — and things that merely *look* like a request do not count:
 
-```text
-/beacon on
-```
+| Not a request | Why |
+|---|---|
+| "simulate an interactive long task" | Long is not the trigger |
+| "fix the dsh-feishu-beacon plugin" | **This one does count** — it contains the word |
+| a task on a workspace that uses this plugin | The workspace is not your instruction |
+| "continue with what we did before" | An earlier request authorised an earlier task, not this one |
 
-Either way, from that moment on:
+The check is deliberately literal. The plugin could try to guess whether you meant it, and
+that guess is exactly how a session once started pushing at someone who had asked for
+nothing. A rule the agent can reason its way around is not a rule, so the decision is not
+left to the agent: the tool refuses to start reporting otherwise.
+
+From that moment on:
 
 | You receive | Until |
 |---|---|
-| every milestone the agent reports | the task ends |
-| every question it needs answered | the task ends |
-| every authorization request | the task ends |
-| a failure, if the task breaks | the task ends |
+| every milestone the agent reports | the turn ends |
+| every question it needs answered | the turn ends |
+| every authorization request | the turn ends |
+| a failure, if the task breaks | the turn ends |
 
-**When the task ends, the watch ends with it.** The plugin closes it as soon as the agent
-hands control back to you — which means the work you asked to be told about is finished. A
-failure is the exception: it is pushed and *then* the watch closes, so a task that broke is
-the one thing that still reaches you.
+**When the task ends, the watch ends with it.** A watch is opened for the turn it was asked
+in, and the turn boundary is the expiry — there is nothing to close and nothing you have to
+remember. A failure is the last thing that turn can say, and it is pushed before control goes
+back to you, so a task that broke is the one thing that still reaches you.
 
 Asking the agent a question in the middle of a task — answering a decision it raised — does
 **not** end the watch. The agent is still working on the same task; it just needs you first.
 
-To stop early:
+A watch is a decision the agent makes, not a switch the plugin flips on your behalf: the
+agent has to recognise that you asked to be kept informed and open one. So the word in your
+instruction is what *authorises* reporting, and the agent acting on it is what *starts* it.
 
-```text
-/beacon off
-```
+### One task, one authorisation
 
-### What a watch does not cover
-
-A watch is scoped to **one task — the work the agent does before it hands control back**.
-If you ask for a fresh change afterwards, that is a new task and notifications are silent
-again until you ask for them. This is deliberate: it is the only boundary the plugin can
-observe honestly, and it means "stop notifying me" never needs to be remembered.
+A watch covers **one task — the work the agent does before it hands control back**. Your next
+instruction starts from silence, even if the previous task never reported that it finished, so
+you can never be left receiving notifications because a watch outlived the request that opened
+it. Ask again — with the word — for the next task.
 
 ## Before you start
 
@@ -149,8 +165,8 @@ Milestone reporting is the agent's decision, so it needs to be asked once:
 
 > report your progress through dsh-feishu-beacon
 
-Questions, authorization requests, and failures need no instruction — they are pushed from
-this point on.
+Questions, authorization requests, and failures need no instruction of their own: while a watch
+is open they are pushed whether or not the agent remembers to report.
 
 ## What you can change
 
@@ -183,7 +199,7 @@ Messages arrive either as an **interactive card** or as plain text.
 
 - **`card`** (default) — a coloured header bar, the task and timestamp on a quiet line, then
   the message. The colour tells you what the notification is before you read it: red for a
-  failure, orange for a decision, green for done, blue for progress.
+  failure, orange for a decision, green for done, blue for plan and progress.
 - **`text`** — everything in one plain block, the way earlier versions sent it.
 
 You do not have to pick correctly. With `card`, if your group refuses an interactive card,
@@ -207,31 +223,6 @@ back to the harness.
   your machine's LAN address if you're on the same Wi-Fi, or a tunnel address if you're not.
 
 When neither this field nor `DSH_WEB_URL` is set, the line is simply left out.
-
-## The `/beacon` command
-
-Type `/beacon` in the composer for anything that does not need the model involved:
-
-| Command | What it does |
-|---|---|
-| `/beacon on` | Watches this task. See [Watching a task](#watching-a-task). |
-| `/beacon off` | Stops watching. The only way reporting is ever turned off. |
-| `/beacon <message>` | Pushes that message to Feishu right now, as a progress milestone from the session you typed it in — and watches the task it belongs to. |
-| `/beacon status` | Shows what the plugin is configured to do — whether it is watching this session, whether a webhook is stored, the format, the length budget, and which notifications are on. |
-| `/beacon clear` | Removes the stored webhook URL and signing secret. Nothing is pushed until you set one again. |
-| `/beacon` | Shows that list. |
-
-A message pushed this way goes through the same format, transport, and fallback a real
-milestone does — it is not a separate path that can behave differently. That makes it the
-quickest way to check delivery without waiting for the agent to reach a milestone.
-
-`clear` removes the credentials, not the watch: it is what you run on a machine you are
-giving away or shutting down. To stop notifications on a machine you are still using, use
-`/beacon off`. `clear` is reversible — paste the webhook back into the settings page and
-pushes resume.
-
-Note the division of labour: `/beacon` pushes when **you** say so, and `dsh_beacon` is the
-tool the **agent** calls — with your permission, which is what the watch records.
 
 ## Upgrading from 0.1.x
 
@@ -257,17 +248,17 @@ if your bot verifies signatures. A `502` in the page means Feishu itself refused
 message.
 
 **I got no notification.**
-The most likely reason is that nothing was watching. Pushes are silent until you ask for
-them for a task — run `/beacon status` and check the `watching this session` line. It reads
-`no` when the task is over, which is the normal state. Then check whether you should have
-been told at all: a run that succeeds sends nothing. Then check the **Enabled** and the
-relevant **Notify on…** switches. And if a run failed while a watch was open and you still
-heard nothing, the push itself failed — the harness log will carry a warning, never an
-error, because a failed notification must not break your session.
+Almost always this is correct. Pushes are silent until your own instruction contains the word
+`beacon`, and they stop when the task ends — so a task you never mentioned the word for
+reports nothing, by design. Check, in order: did that instruction really contain `beacon`?
+Then, should you have been told at all — a run that succeeds sends nothing. Then the
+**Enabled** and the relevant **Notify on…** switches. And if a run failed while reporting was
+authorised and you still heard nothing, the push itself failed: the harness log will carry a
+warning, never an error, because a failed notification must not break your session.
 
-**The agent says it cannot report because nothing is watching.**
-That is the plugin refusing to push while you are at the keyboard. Say you want progress
-reported for the task, or run `/beacon on`.
+**The agent says it cannot report because beacon was not named.**
+That is the plugin refusing to start reporting without your authorisation. It is not asking
+you to rephrase: if you want reports, say so with the word `beacon`.
 
 **The notification arrives but the `Open at:` link doesn't open.**
 That address isn't reachable from the device you read the message on. See
@@ -363,17 +354,51 @@ Two HTTP routes serve the settings section:
 patch: plain fields merge, `clearWebhook` / `clearSecret` unset a stored credential, and an
 empty credential string means "keep the stored value".
 
-The `/beacon` command is registered through the `commands` service, which is why that name
-is in the host half's `inject` list — a missing service keeps the whole row from loading.
-Its handler resolves subcommands (`clear`, `status`) before treating the input as a message,
-and returns a `{ kind, text }` result rather than throwing, so the composer renders the
-refusal instead of the command vanishing. Its effect disposer unregisters the command, which
-`test/smoke.mjs` asserts alongside the route teardown.
+Authorisation is a **literal word in the user's own instruction**, checked by the plugin rather
+than inferred by the model. `lib/index.js` folds three facts out of the session log: whether a
+watch was recorded, which turn it was recorded in, and what the human last typed — reading only
+`user/message` events whose `source.kind` is `user`, so an injected runtime-context snapshot or
+skill catalog can never authorise a push. (`message/user` is accepted as well, because this is
+the authorisation check: a harness rename would not degrade the gate, it would silence it.) A
+queued prompt counts too, since one submitted mid-turn waits as `agent/inbox/spliced` with
+`target: "next-turn"` before it becomes a `user/message`.
+
+The turn comparison is what makes the authorisation expire, and it is the *only* thing that
+does: nothing writes to the session when a turn ends. That is not an optimisation — dsh refuses
+an append made while another append is being published ("session append cannot reenter while
+another append is being published"), and the `turn/end` observer runs inside one, so a close
+recorded there can never land. It did not land, in a live session: the watch stayed open past
+its turn, the tool saw a watch on the session and declined to open one for the next turn, and
+every task after the first was refused as unauthorised. The rule is therefore "does the turn
+running now have a watch", never "has this session ever been watched", and `test/watch-lifecycle.mjs`
+pins both halves of that — including a session stub whose `append` refuses to re-enter, the way
+dsh's does.
+
+The card kinds are exactly four (`plan`, `progress`, `decision`, `done`), and they are the whole
+vocabulary the agent chooses from. Everything the event layer sends is rendered as one of them:
+a question and an approval request are both `DECISION`, because both need you at your computer,
+and the body's first line (`Answer needed`, `Authorization needed`) says which. `Turn failed` is
+the one deliberate exception — a run that broke is not a decision you can answer, so it keeps its
+own title and its own colour, and the red header is what distinguishes it from the orange.
+
+The other half of the rule is not enforcement but **silence**, and it cannot be enforced at all:
+the plugin decides whether to push, but nothing it does can stop the model from *writing* the
+word. It is therefore registered as a `systemPrompt` section (`order: 950`, between the
+file-reference section and the first per-tool section) so it is assembled into every turn, with
+`interpolate: false` because the text is not a template. Injecting `systemPrompt` is a hard
+dependency: cordis will not activate a row whose declared services are absent.
+`test/prompt-section.mjs` drives the real service and asserts the section's name, placement,
+wording, and that its disposer withdraws it.
+
+The `/beacon` command is **disabled**, and `commands` is therefore absent from the host half's
+`inject` list — a name left there after its use is gone keeps the row from loading entirely.
+The registration was withdrawn because a command bypasses exactly the recognition that this rule
+is built on, and its strings went with it rather than sitting in the file as dead text.
 
 `webhookUrl` and `secret` are declared `role("secret")`, so dsh strips them from every
 wire-facing view. Because "empty" and "unset" are different stored states, clearing uses a
-declarative `unset` rather than writing an empty string — and `/beacon clear` and the
-settings page's `Clear` both go through that same path.
+declarative `unset` rather than writing an empty string — the settings page's `Clear` goes
+through that path.
 
 The signature covers both formats: `HMAC-SHA256` keyed by `"<timestamp>\n<secret>"`, an
 empty message, and a base64 digest, sent as `timestamp` and `sign` query parameters. A card
@@ -394,7 +419,9 @@ npm install --ignore-scripts --cache .npm-cache
 node test/no-cjk.mjs          # every shipped file is pure ASCII (no CJK)
 node test/smoke.mjs           # host half: pushes, dedupe, routes, hot config
 node test/client-smoke.mjs    # client half: loader contract, slot, controller, form
+node test/watch-lifecycle.mjs # the push gate: who may be notified, and for how long
 node test/cordis-mount.mjs web   # a real Cordis registry mounts and re-applies the export
+node test/prompt-section.mjs     # the naming rule reaches every assembled prompt
 node test/install-load.mjs web   # the installed profile link resolves and applies
 node test/pack-install-check.mjs # the published file set composes into a profile
 node test/live-contract.mjs      # a running harness serves the documented contract
@@ -424,28 +451,60 @@ If you publish by hand instead, note two traps:
 
 ### Changes
 
+#### 0.2.5
+
+**The pushed card is exactly one of four kinds: `plan`, `progress`, `decision`, `done`.** The
+event layer renders through the same four rather than titles of its own. A question and an
+authorization request are both `DECISION` — both need you at your computer — and the body's
+first line (`Answer needed`, `Authorization needed`) says which. Before this they were sent as
+`PROGRESS` cards, which also meant the colours the 0.2.3 notes describe were not true: an
+approval request arrived blue, and so did a failure. `Turn failed` remains a card of its own
+and is now actually red, because a run that broke is not a decision you can answer.
+
+**Two gate defects, both of which ended reporting after the first task.** The watch is spent
+when its turn ends, but the tool asked "has this session ever been watched" instead of "does
+the turn running now have a watch", so on the second task it declined to open a watch and then
+refused the push — the second task you asked to hear about was the last one you could hear
+about. And the watch was supposed to be closed by appending to the session from the `turn/end`
+observer, which dsh refuses ("session append cannot reenter while another append is being
+published"), so that close never happened. The turn boundary is now the close, read off the
+log position, and nothing writes to the session from an observer.
+
+Also: the instruction is read from `user/message`, the event dsh 0.2 actually emits. The code
+looked only for `message/user`, which never occurs, so authorisation was riding on a fallback
+path.
+
 #### 0.2.4
 
-**Breaking: nothing is pushed until you ask for it.** A *watch* now gates every push, and it
-defaults to off. While you are at the keyboard a phone notification is noise, and the plugin
-cannot tell whether you have stepped away — only you can, so it no longer guesses.
-**Upgrading silences the plugin until you ask for reports on a task.** See
-[Watching a task](#watching-a-task).
+**Breaking: nothing is pushed until your own instruction contains the word `beacon`.** Every
+push is gated on that one literal word, checked by the plugin rather than judged by the agent,
+and the authorisation expires when the task ends. While you are at the keyboard a phone
+notification is noise, and the plugin cannot tell whether you have stepped away — only you can,
+so it no longer guesses. **Upgrading silences the plugin until you name the word for a task.**
+See [Watching a task](#watching-a-task).
 
-A watch opens when you ask for reports in words — the agent recognises it and records it on
-the session — or directly with `/beacon on`. It closes by itself when the task ends, which
-is when the agent hands control back. Answering a decision mid-task does not end it: the
-agent is still working, it just needs you first.
+A watch opens when you name that word, and closes by itself when the task ends, which is when
+the agent hands control back. Answering a decision mid-task does not end it: the agent is still
+working, it just needs you first.
 
 A failure is pushed **before** the watch closes. That order is the whole point: a task that
 broke is exactly what you stepped away from, and a close that ran first would swallow it.
 
 The tool can open a watch and report; it can never close one. A model that decided to stop
-notifying you would leave you waiting in silence, so closing is reserved for you — in words
-or with `/beacon off`.
+notifying you would leave you waiting in silence, so closing is reserved for you.
 
-`/beacon on`, `/beacon off`, and the watch line in `/beacon status` are new. `/beacon
-&lt;message&gt;` still pushes immediately and now also watches the task it belongs to.
+The literal check replaced an earlier version of this release that left the decision to the
+agent. That version was not good enough: in a session whose instruction was merely "simulate an
+interactive long task", the agent reasoned that the task was about testing this plugin, armed
+reporting by itself, and sent four notifications nobody had asked for. A rule the agent can
+reason its way around is not a rule, so the test moved into the plugin.
+
+A `systemPrompt` section carries the other half of the rule — that the agent must not raise the
+subject unprompted, including in prose on a turn where it decided not to call the tool at all.
+That failure was observed: the agent reasoned "the user didn't mention beacon this time, so I
+won't bring it up", and then opened its reply with exactly that sentence.
+
+The `/beacon` command is disabled: a command bypasses the recognition this rule rests on.
 
 #### 0.2.3
 

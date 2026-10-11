@@ -365,7 +365,6 @@ containsAll(formText, [
   "Title prefix",
   "Host URL in messages",
   "Max characters",
-  "Enabled",
   "Notify on questions",
   "Notify on approvals",
   "Notify on failed turns",
@@ -434,29 +433,39 @@ const enabledInput = findAll(edits.form, (element) => element.type === "input")
   .find((element) => element.props.id === "dsh-feishu-beacon-enabled");
 ok(enabledInput === undefined, "the enabled variable is a switch, not an input");
 
+// The master switch rides the heading rather than a row of its own, so its label
+// is the section title — a second "Enabled" beside "Feishu beacon" would only
+// repeat what the heading already says.
+const switchOrder = findAll(edits.form, (element) => element.props?.role === "switch")
+  .map((element) => element.props["aria-labelledby"]);
+equal(switchOrder, [
+  "dsh-feishu-beacon-heading",
+  "dsh-feishu-beacon-notify-question",
+  "dsh-feishu-beacon-notify-approval",
+  "dsh-feishu-beacon-notify-error"
+], "the master switch leads the form, and the notify switches follow it");
+const labels = Object.fromEntries(
+  findAll(edits.form, (element) => element.props?.id !== undefined && element.props.id.startsWith("dsh-feishu-beacon-"))
+    .map((element) => [element.props.id, textOf(element)])
+);
+equal(labels["dsh-feishu-beacon-heading"], "Feishu beacon",
+  "the master switch is labelled by the section heading");
+ok(!formText.includes("Enabled"),
+  "no separate Enabled label remains, because the heading already names it");
+
 const maxCharsInput = findAll(edits.form, (element) => element.type === "input")
   .find((element) => element.props.id === "dsh-feishu-beacon-max-chars");
 maxCharsInput.props.onChange({ target: { value: "900" } });
 equal(edits.calls.at(-1), ["text", "maxChars", "900"], "the budget field reports its raw text");
 
-// The format field only forwards the two values the route accepts, so a typo
-// cannot be written and then silently reverted.
+// The format is deliberately not a question the form asks. A refused card falls
+// back to text on its own, so choosing by hand would only remove the attempt.
 const formatInput = findAll(edits.form, (element) => element.type === "input")
   .find((element) => element.props.id === "dsh-feishu-beacon-format");
-ok(formatInput !== undefined, "the message format has its own field");
-equal(formatInput.props.value, "card", "the format field shows the default");
-formatInput.props.onChange({ target: { value: "text" } });
-equal(edits.calls.at(-1), ["text", "format", "text"], "choosing text is reported");
-formatInput.props.onChange({ target: { value: "  CARD  " } });
-equal(edits.calls.at(-1), ["text", "format", "card"], "the value is normalized before it is reported");
-const beforeInvalid = edits.calls.length;
-formatInput.props.onChange({ target: { value: "cards" } });
-equal(edits.calls.length, beforeInvalid, "an unsupported format is not reported at all");
-
-const cardView = renderForm(sampleView({ format: "text" })).form;
-const cardFormatInput = findAll(cardView, (element) => element.type === "input")
-  .find((element) => element.props.id === "dsh-feishu-beacon-format");
-equal(cardFormatInput.props.value, "text", "the format field shows what the host holds");
+equal(formatInput, undefined, "the form asks for no message format");
+const hostsFormat = renderForm(sampleView({ format: "text" })).form;
+equal(findAll(hostsFormat, (element) => element.props.id === "dsh-feishu-beacon-format").length, 0,
+  "a host that still stores a format does not grow the field back");
 
 ok(findByType(form, "input") !== undefined, "the form renders inputs");
 ok(findByType(form, "button") !== undefined, "the form renders buttons");

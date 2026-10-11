@@ -45,12 +45,13 @@
     "access": "public"
   },
   "scripts": {
-    "test": "node test/no-cjk.mjs && node test/smoke.mjs && node test/client-smoke.mjs",
+    "test": "node test/no-cjk.mjs && node test/smoke.mjs && node test/client-smoke.mjs && node test/watch-lifecycle.mjs",
     "check": "node --check lib/index.js && node --check lib/client.js",
     "test:profile": "node test/profile-check.mjs",
     "test:packing": "node test/pack-install-check.mjs",
     "test:installed": "node test/install-load.mjs",
     "test:cordis": "node test/cordis-mount.mjs",
+    "test:prompt": "node test/prompt-section.mjs",
     "test:live": "node test/live-contract.mjs"
   },
   "//devDependencies": "Test-time resolution set only. The host half imports @deepseek-ai/dsh-tools and @deepseek-ai/schemastery; a dsh profile supplies them at runtime from the installation, and these copies are what the checkout's own tests resolve against. They are pinned to the dsh release this plugin was verified against: dsh is a developer preview with breaking changes between releases.",

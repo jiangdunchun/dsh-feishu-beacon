@@ -117,12 +117,20 @@ function makeCtx(base) {
     /** The resolved config object the currently applied row was given. */
     resolved: undefined,
     /** Every command definition `apply` registered, by name. */
-    commands: new Map()
+    commands: new Map(),
+    /** Every system-prompt section `apply` registered, by name. */
+    sections: new Map()
   };
   const ctx = {
     tools: {
       register(tool) {
         state.tools.set(tool.name, tool);
+      }
+    },
+    systemPrompt: {
+      section(definition) {
+        state.sections.set(definition.name, definition);
+        return () => state.sections.delete(definition.name);
       }
     },
     commands: {
@@ -255,16 +263,69 @@ async function callRoute(state, path, method, body) {
  * list and exposes the whole log through `events` — a watch decision recorded by
  * one push is visible to the next, exactly as it is against a real session.
  */
-function fakeSession(events) {
+/**
+ * The turn every stub session is sitting in, and the instruction that opened it.
+ *
+ * A task watch is valid only for the turn it was opened in, and only while the user's
+ * instruction names the trigger word, so a stub without both would be a session that
+ * cannot exist: the user typed something to start the work.
+ */
+const STUB_TURN = 1;
+const STUB_PROMPT = "do the work, and beacon me about the progress";
+
+/**
+ * One `user/message` event carrying a human prompt.
+ *
+ * `user/message` is the type dsh 0.2 actually emits — confirmed against a live
+ * session log, where an instruction arrives as `user/message` alongside
+ * `runtime-context` and `skill-catalog` events on the same type. Seeding anything
+ * else would test a shape the runtime never produces.
+ */
+function userMessageEvent(text) {
+  return {
+    type: "user/message",
+    data: {
+      role: "user",
+      source: { kind: "user" },
+      content: [{ type: "text", text }]
+    }
+  };
+}
+
+/**
+ * A session stub shaped like the documented `session/event` callback argument.
+ *
+ * Seeded with the current turn and an authorising instruction, because the plugin
+ * checks both. The watch state lives in the session log, so the stub keeps an
+ * append-only list and exposes the whole log through `events` — a decision recorded by
+ * one push is visible to the next, exactly as it is against a real session.
+ *
+ * @param events - extra events to seed ahead of the prompt.
+ * @param prompt - the instruction; pass "" for a session started without one.
+ */
+function fakeSession(events, prompt = STUB_PROMPT) {
   const appended = [];
+  const seed = [
+    { type: "turn/start", data: { turn: STUB_TURN } },
+    ...events,
+    ...prompt === "" ? [] : [userMessageEvent(prompt)]
+  ];
   return {
     id: "session-1",
     header: { cwd: WORKSPACE_CWD },
+    /** Set while an event dispatch is running, so a re-entrant append is refused. */
+    dispatching: false,
     appended,
     get events() {
-      return [...events, ...appended];
+      return [...seed, ...appended];
     },
     append(type, data) {
+      // dsh refuses an append made while another append is being published, and a
+      // `session/event` observer runs inside one. Reproducing that here is what keeps
+      // "never write to the log from an observer" a rule the suite can catch.
+      if (this.dispatching === true) {
+        throw new Error("session append cannot reenter while another append is being published");
+      }
       appended.push({ type, data });
       return { type, data };
     }
@@ -320,6 +381,21 @@ function templateOf(entry) {
   return payloadOf(entry).card?.header?.template;
 }
 
+/** The card's header title. */
+function headerOf(entry) {
+  return payloadOf(entry).card?.header?.title?.content;
+}
+
+/**
+ * The card's body: the last text block, which the rule separates from the metadata.
+ *
+ * The header is the kind alone, so the body's first line is what says which of that
+ * kind's situations this is — a question or an approval request, both decisions.
+ */
+function cardBody(entry) {
+  return (payloadOf(entry).card?.elements ?? []).at(-1)?.text?.content ?? "";
+}
+
 /** A local Feishu stand-in that records every request it receives. */
 async function startWebhook() {
   const received = [];
@@ -361,24 +437,37 @@ async function startWebhook() {
   };
 }
 
-/** Emit one session event into every registered hook. */
+/** Emit one session event into every registered hook, the way an append would. */
 function emit(state, session, event) {
-  for (const listener of state.listeners.get("session/event") ?? []) listener(session, event);
+  session.dispatching = true;
+  try {
+    for (const listener of state.listeners.get("session/event") ?? []) listener(session, event);
+  } finally {
+    session.dispatching = false;
+  }
 }
 
 /**
- * Open the watch on a session the way a user would.
+ * Open the task watch on a session the way the user's prose does.
  *
- * Event pushes are silent until a session is watched, so every test that expects
- * a question, approval, or failure to arrive has to watch the session first. It
- * goes through the real `/beacon on` path rather than writing the event itself,
- * so the tests exercise the mechanism they depend on.
+ * Event pushes are silent until a session is watched, so every test that expects a
+ * question, approval, or failure to arrive has to watch the session first. The tool is
+ * the only way in — the `/beacon` command is disabled — which is the point: opening a
+ * watch requires the model to recognise that the user asked for one.
+ *
+ * The opening message is named so the harness can drop it from its record, because a
+ * test that watches a session and then inspects "the last push" means the push it is
+ * about to trigger, not this one.
  */
-async function watchSession(state, session) {
-  const definition = state.commands.get("beacon");
-  if (definition === undefined) throw new Error("/beacon is not registered");
-  const result = await definition.handler({ rawInput: "on", agent: { session }, signal: undefined, attachments: [] });
-  if (result.kind !== "success") throw new Error(`could not watch the session: ${result.text}`);
+async function watchSession(state, session, webhook) {
+  const tool = state.tools.get("dsh_beacon");
+  if (tool === undefined) throw new Error("dsh_beacon is not registered");
+  const result = await tool.execute(
+    { message: "watching this task", kind: "plan", watch: true },
+    { agent: { session }, callId: `watch-${String(session.id)}`, signal: undefined }
+  );
+  if (result?.delivered !== true) throw new Error("could not watch the session");
+  webhook.received.length = 0;
   return result;
 }
 
@@ -428,6 +517,7 @@ function resolve() {
   state.listeners.clear();
   state.tools.clear();
   state.commands.clear();
+  state.sections.clear();
   // A re-applied row replaces what the previous apply registered rather than
   // stacking on it — the shell serves one handler per path, so a test harness
   // that let registrations accumulate would be testing its own bookkeeping.
@@ -462,16 +552,43 @@ const tool = resolve();
 ok(state.tools.has("dsh_beacon"), "registers the dsh_beacon tool");
 ok((state.listeners.get("session/event") ?? []).length === 1, "hooks session/event once");
 ok(state.routes.size === 2, "registers exactly 2 routes", `registered: ${[...state.routes.keys()].join(", ")}`);
-equal(mod.inject, ["tools", "workspaceRegistry", "settings", "webServer", "commands"], "inject list");
-ok(state.commands.has("beacon"), "registers the /beacon command");
+equal(mod.inject, ["tools", "workspaceRegistry", "settings", "webServer", "systemPrompt"], "inject list");
+
+// The naming rule has to reach every turn, which is why it is a prompt section and not
+// another sentence in the tool description: the description is only in view while the
+// agent is deciding whether to call the tool, and the observed failure was prose written
+// by an agent that had already decided not to call it.
+const rule = state.sections.get("dsh-feishu-beacon:naming-rule");
+ok(rule !== undefined, "registers the naming rule as a system-prompt section");
+equal(rule?.order, 950, "the rule sits between the file-reference and per-tool sections");
+equal(rule?.interpolate, false, "the rule is literal text, not a template");
+contains(rule?.text ?? "", "Do not write it in your own replies", "the rule forbids writing the word");
+contains(rule?.text ?? "", "does not involve beacon", "the rule names the exact phrasing that leaked");
+contains(rule?.text ?? "", "earlier instruction contained the word and", "the rule targets the contrast effect");
+contains(rule?.text ?? "", "never offer beacon as a choice", "the rule forbids offering it as an option");
+contains(rule?.text ?? "", "silently do the work", "the rule says what to do instead");
+contains(rule?.text ?? "", "the rule is about not raising the subject unprompted",
+  "the rule does not stop the agent acting when the word is present");
+ok(!state.commands.has("beacon"), "the /beacon command is not registered");
+ok(!mod.inject.includes("commands"),
+  "commands is not injected, because an unused declared service is a load failure waiting to happen");
 ok(mod.name === "dsh-feishu-beacon", "plugin name");
 ok(typeof mod.Config === "function" && mod.Config.type === "object",
   "exports the Config schema the settings service reads");
 ok(mod.Config.dict.webhookUrl?.meta?.volatile === true, "webhookUrl is volatile, so the settings page may edit it");
 ok(mod.Config.dict.webhookUrl?.meta?.role === "secret", "webhookUrl is a secret, so no view echoes it");
 ok(mod.Config.dict.secret?.meta?.role === "secret", "secret is a secret");
-ok(Object.values(mod.Config.dict).every((field) => field.meta?.volatile === true),
-  "every field is volatile, so none of the configuration is invisible to the settings page");
+// Volatility is what puts a field in the settings form, and `format` is deliberately
+// not in it: a refused card already falls back to text, so the question has no answer
+// worth asking. It stays a field so an operator can still set it on the row.
+const VOLATILE_FIELDS = ["webhookUrl", "secret", "enabled", "prefix", "notifyQuestion", "notifyApproval", "notifyError", "maxChars", "publicUrl"];
+equal(mod.Config.dict.format?.meta?.volatile ?? false, false,
+  "format is not volatile, so the settings form does not ask for it");
+for (const field of VOLATILE_FIELDS) {
+  ok(mod.Config.dict[field]?.meta?.volatile === true, `${field} is volatile, so the settings page may edit it`);
+}
+equal(Object.keys(mod.Config.dict).filter((field) => mod.Config.dict[field]?.meta?.volatile !== true), ["format"],
+  "format is the only field the settings page cannot edit");
 
 process.stdout.write("\n2. tool push\n");
 const toolTitle = "Investigate the flaky deploy";
@@ -517,6 +634,74 @@ ok((payloadOf(webhook.received.at(-1)).card?.elements ?? [])
 const renderText = tool.output.render({}, { kind: "done" })[0].text;
 equal(renderText, "Pushed (done)", "tool output render text");
 
+process.stdout.write("\n2b. plan coverage note\n");
+// The plan card covers the first step and the done card the last, so a finished step
+// in between expects a progress card of its own. The note states the gap on the result
+// of a call that is already being made; it never refuses one.
+const coverageTool = resolve();
+const coverageSession = fakeSession([{ type: "session/title", data: { title: "Coverage" } }]);
+const coverageExec = (callId) => ({ agent: { session: coverageSession }, callId, signal: undefined });
+
+// No todo list yet, so there is nothing to compare against and the plan stays silent.
+const planResult = await coverageTool.execute(
+  { message: "four steps, one at a time", kind: "plan", watch: true },
+  coverageExec("call-coverage-1")
+);
+equal(planResult, { kind: "plan", delivered: true }, "a plan with no todo list carries no note");
+
+// Three of four steps are finished, and this is the first report of any of them.
+coverageSession.append("todo/write", {
+  todos: [
+    { content: "step 1", status: "completed" },
+    { content: "step 2", status: "completed" },
+    { content: "step 3", status: "completed" },
+    { content: "step 4", status: "pending" }
+  ]
+});
+const firstReport = await coverageTool.execute(
+  { message: "step 2 of 4 done", kind: "progress" },
+  coverageExec("call-coverage-2")
+);
+ok(typeof firstReport.note === "string", "a plan that has run ahead of its reports gets a note", firstReport.note);
+contains(firstReport.note, "1 progress card(s) sent", "the note counts the reports so far");
+contains(firstReport.note, "3 of 4 steps marked completed", "the note counts the finished steps");
+equal(coverageTool.output.render({}, firstReport)[0].text, "Pushed (progress)",
+  "the pushed kind still leads the rendered result");
+equal(coverageTool.output.render({}, firstReport)[1].text, firstReport.note,
+  "the note is a second rendered block");
+
+// The runtime logs the call alongside the push, and the next report counts it.
+coverageSession.append("tool/call", {
+  name: "dsh_beacon",
+  callId: "call-coverage-2",
+  arguments: JSON.stringify({ kind: "progress" })
+});
+const secondReport = await coverageTool.execute(
+  { message: "step 3 of 4 done", kind: "progress" },
+  coverageExec("call-coverage-3")
+);
+equal(secondReport, { kind: "progress", delivered: true }, "a report that closes the gap carries no note");
+
+// Every step is finished, and two progress cards cover the two steps in between.
+coverageSession.append("todo/write", {
+  todos: [
+    { content: "step 1", status: "completed" },
+    { content: "step 2", status: "completed" },
+    { content: "step 3", status: "completed" },
+    { content: "step 4", status: "completed" }
+  ]
+});
+coverageSession.append("tool/call", {
+  name: "dsh_beacon",
+  callId: "call-coverage-3",
+  arguments: JSON.stringify({ kind: "progress" })
+});
+const finishedReport = await coverageTool.execute(
+  { message: "all four done", kind: "done" },
+  coverageExec("call-coverage-4")
+);
+equal(finishedReport, { kind: "done", delivered: true }, "the done card is silent once the plan is covered");
+
 process.stdout.write("\n3. ask_user_question push\n");
 process.stdout.write("\n3. silent until watched, then ask_user_question push\n");
 const questionSession = fakeSession([{ type: "session/title", data: { title: "Choose a storage engine" } }]);
@@ -550,15 +735,26 @@ const questionCall = {
     })
   }
 };
-const beforeQuestion = webhook.received.length;
-emit(state, questionSession, questionCall);
+// Silent first, in its own session: the whole point of the gate is that an unwatched
+// session receives nothing, and mixing that check with the watched push below would
+// leave both assertions reading each other's state.
+const quietQuestionSession = fakeSession([{ type: "session/title", data: { title: "Choose a storage engine" } }]);
+const beforeQuietQuestion = webhook.received.length;
+emit(state, quietQuestionSession, questionCall);
 await settle(40);
-equal(webhook.received.length, beforeQuestion, "an unwatched session pushes nothing at all");
-await watchSession(state, questionSession);
+equal(webhook.received.length, beforeQuietQuestion, "an unwatched session pushes nothing at all");
+
+await watchSession(state, questionSession, webhook);
+const beforeQuestion = webhook.received.length;
 emit(state, questionSession, questionCall);
 ok(await until(() => webhook.received.length === beforeQuestion + 1, "question push"), "question event pushed once watched");
 const questionText = payloadTextRaw(webhook.received.at(-1));
-contains(questionText, "Answer needed", "question title");
+equal(headerOf(webhook.received.at(-1)), "DECISION",
+  "a question is pushed as DECISION: the four kinds are the whole vocabulary");
+equal(templateOf(webhook.received.at(-1)), "orange", "a pending decision uses the orange header");
+ok(cardBody(webhook.received.at(-1)).startsWith("Answer needed"),
+  "the body's first line says which decision this is", cardBody(webhook.received.at(-1)));
+contains(questionText, "Answer needed", "question lead");
 contains(questionText, "Which storage engine should the beacon use?", "question body");
 contains(questionText, "Storage: ", "question header");
 contains(questionText, "SQLite (Recommended)", "first option label");
@@ -576,7 +772,7 @@ ok(webhook.received.length === beforeDuplicate, "the same callId never pushes tw
 
 process.stdout.write("\n5. approval push\n");
 const approvalSession = fakeSession([{ type: "session/title", data: { title: "Deploy to staging" } }]);
-await watchSession(state, approvalSession);
+await watchSession(state, approvalSession, webhook);
 const beforeApproval = webhook.received.length;
 emit(state, approvalSession, {
   type: "approval/asked",
@@ -584,13 +780,18 @@ emit(state, approvalSession, {
 });
 ok(await until(() => webhook.received.length === beforeApproval + 1, "approval push"), "approval event pushed");
 const approvalText = payloadTextRaw(webhook.received.at(-1));
-contains(approvalText, "Authorization needed", "approval title");
+equal(headerOf(webhook.received.at(-1)), "DECISION",
+  "a missing authorisation is a decision, the same kind as a question");
+equal(templateOf(webhook.received.at(-1)), "orange", "an approval request uses the orange header");
+ok(cardBody(webhook.received.at(-1)).startsWith("Authorization needed"),
+  "the body's first line says which decision this is", cardBody(webhook.received.at(-1)));
+contains(approvalText, "Authorization needed", "approval lead");
 contains(approvalText, "tool: pwsh", "approval tool name");
 contains(approvalText, "reason: The command writes outside the workspace.", "approval reason");
 
 process.stdout.write("\n6. failed turn push\n");
 const errorSession = fakeSession([{ type: "session/title", data: { title: "Migrate the schema" } }]);
-await watchSession(state, errorSession);
+await watchSession(state, errorSession, webhook);
 const beforeError = webhook.received.length;
 emit(state, errorSession, {
   type: "turn/end",
@@ -599,17 +800,18 @@ emit(state, errorSession, {
 });
 ok(await until(() => webhook.received.length === beforeError + 1, "error push"), "failed turn pushed");
 const errorText = payloadTextRaw(webhook.received.at(-1));
+equal(headerOf(webhook.received.at(-1)), "Turn failed",
+  "a failed turn keeps a card of its own, not one of the four the agent chooses from");
+equal(templateOf(webhook.received.at(-1)), "red", "a failure uses the red header");
 contains(errorText, "Turn failed", "error title");
 contains(errorText, "Provider returned 429", "error message");
 contains(errorText, "(RATE_LIMIT)", "error code");
-// The watch ends with the turn that carried it. Checking after the error push is
-// the point: a close that ran first would have swallowed the failure the user
-// stepped away from.
-ok(errorSession.events.some((event) => event.type === "beacon/unwatch"),
-  "the failed turn closed the watch, after pushing");
-const watchEventsBeforeCompleted = errorSession.appended.filter((event) => event.type === "beacon/unwatch").length;
 
-process.stdout.write("\n7. completed turn stays silent\n");
+process.stdout.write("\n7. a finished turn pushes nothing more\n");
+// The watch is spent when its turn ends, so the next turn starts unarmed even though
+// the log still holds the watch event. Nothing has to be written at the end of a turn
+// for that to be true — which matters, because dsh refuses an append made from inside
+// an append and the `turn/end` observer is inside one.
 const beforeCompleted = webhook.received.length;
 emit(state, errorSession, {
   type: "turn/end",
@@ -623,8 +825,8 @@ emit(state, errorSession, {
 });
 await settle(40);
 ok(webhook.received.length === beforeCompleted, "completed and aborted turns push nothing");
-equal(errorSession.appended.filter((event) => event.type === "beacon/unwatch").length, watchEventsBeforeCompleted,
-  "an already-closed watch is not closed twice");
+ok(state.logs.every(([, message]) => !message.includes("could not record the watch")),
+  "handling a turn/end never writes to the session log, so it can never be refused");
 
 process.stdout.write("\n7b. the watch lifecycle\n");
 // Silent by default: a fresh session with no watch pushes nothing, whatever the
@@ -643,15 +845,23 @@ emit(state, quietSession, {
 await settle(40);
 equal(webhook.received.length, beforeQuiet, "an unwatched session pushes nothing, approvals and failures included");
 
-// The tool can open a watch — that is how prose becomes a decision.
-const openedSession = fakeSession([{ type: "session/title", data: { title: "Opened by the tool" } }]);
+// The tool is the only way in — that is how prose becomes a decision. This session's
+// instruction deliberately does not name the trigger, so the first call is refused;
+// once the word arrives, the same call arms the task scope and pushes.
+const openedSession = fakeSession([{ type: "session/title", data: { title: "Opened by the tool" } }], "no trigger word here");
 const openedExec = { agent: { session: openedSession }, callId: "call-open", signal: undefined };
 const beforeOpen = webhook.received.length;
 const refusedWithoutWatch = await state.tools.get("dsh_beacon")
   .execute({ message: "nobody asked for this" }, openedExec)
   .then(() => undefined, (error) => String(error?.message ?? error));
-contains(refusedWithoutWatch, "not watching this session", "an unwatched tool call says why it refused");
+contains(refusedWithoutWatch, "does not name beacon", "an unauthorised tool call says why it refused");
 equal(webhook.received.length, beforeOpen, "the refused tool call pushed nothing");
+openedSession.append("turn/start", { turn: STUB_TURN });
+openedSession.append("user/message", {
+  role: "user",
+  source: { kind: "user" },
+  content: [{ type: "text", text: "beacon me for this one" }]
+});
 const openedResult = await state.tools.get("dsh_beacon")
   .execute({ message: "plan: four steps", kind: "plan", watch: true }, openedExec);
 equal(openedResult, { kind: "plan", delivered: true }, "watch:true opens the watch and pushes the first message");
@@ -667,35 +877,53 @@ emit(state, openedSession, {
 ok(await until(() => webhook.received.length === beforeOpenedEvent + 1, "watched approval"),
   "a watched session pushes approvals");
 
-// A decision does not end the turn, so the watch survives it: the model parks on
-// the user rather than handing control back.
+// A decision is no longer sent from the tool: the event layer already notifies the
+// question or the approval that raises it, and a second card for the same moment is
+// the duplicate the removal exists to close. It refuses rather than remapping to
+// progress, so the caller learns the rule at the call that got it wrong.
 const beforeDecision = webhook.received.length;
-await state.tools.get("dsh_beacon").execute({ message: "which way?", kind: "decision" }, openedExec);
-equal(webhook.received.length, beforeDecision + 1, "a decision milestone is pushed while watching");
-ok(openedSession.events.filter((event) => event.type === "beacon/unwatch").length === 0,
-  "a decision leaves the watch open, because the turn is still running");
+const refusedDecision = await state.tools.get("dsh_beacon")
+  .execute({ message: "which way?", kind: "decision" }, openedExec)
+  .then(() => undefined, (error) => String(error?.message ?? error));
+contains(refusedDecision, "does not send decision cards from the tool", "the tool refuses a decision card");
+equal(webhook.received.length, beforeDecision, "the refused decision card pushed nothing");
 
-// The turn ending is what closes it.
-emit(state, openedSession, {
-  type: "turn/end",
-  time: "2026-01-01T00:00:20.000Z",
-  data: { turn: 11, reason: { kind: "completed" } }
+// A milestone does not end the turn, so the watch is still this turn's: the model
+// parks on the user rather than handing control back.
+await state.tools.get("dsh_beacon").execute({ message: "step 2 of 4 done", kind: "progress" }, openedExec);
+equal(webhook.received.length, beforeDecision + 1, "a milestone is pushed while watching");
+
+// A later instruction in the same turn that drops the word closes the gate again: the
+// authorisation is re-read at every push, not remembered from when the watch opened.
+openedSession.append("user/message", {
+  role: "user",
+  source: { kind: "user" },
+  content: [{ type: "text", text: "carry on, no need to tell me about this one" }]
 });
-await settle(20);
-ok(openedSession.events.some((event) => event.type === "beacon/unwatch"),
-  "the completed turn closed the watch");
-const beforeAfterClose = webhook.received.length;
+const beforeAfterWord = webhook.received.length;
 emit(state, openedSession, {
   type: "approval/asked",
-  data: { id: "approval-after", toolName: "pwsh", callId: "call-after", reason: "after" }
+  data: { id: "approval-after-word", toolName: "pwsh", callId: "call-after-word", reason: "after" }
 });
 await settle(40);
-equal(webhook.received.length, beforeAfterClose, "the closed watch stops the event layer again");
+equal(webhook.received.length, beforeAfterWord,
+  "an instruction that stops naming beacon stops the pushes, without ending the turn");
+
+// A new turn is what makes the watch (and any authorisation) spent.
+const beforeNextTurn = webhook.received.length;
+openedSession.append("turn/end", { turn: 1, reason: { kind: "completed" } });
+openedSession.append("turn/start", { turn: 2 });
+emit(state, openedSession, {
+  type: "approval/asked",
+  data: { id: "approval-next-turn", toolName: "pwsh", callId: "call-next-turn", reason: "next turn" }
+});
+await settle(40);
+equal(webhook.received.length, beforeNextTurn, "a new turn starts unarmed, whatever the previous turn did");
 
 process.stdout.write("\n8. signing\n");
 const signedTool = await edit({ secret: SECRET });
 const beforeSign = webhook.received.length;
-await signedTool.execute({ message: "signed push", kind: "decision", watch: true }, toolExec);
+await signedTool.execute({ message: "signed push", kind: "progress", watch: true }, toolExec);
 const signed = webhook.received.at(-1);
 ok(signed !== undefined && webhook.received.length === beforeSign + 1, "signed push reached the webhook");
 const signedUrl = new URL(`http://127.0.0.1${signed.url}`);
@@ -898,92 +1126,26 @@ equal(textSends.length, 1, "the text format sends once, with no card to refuse")
 equal(payloadOf(textSends[0]).msg_type, "text", "the text format is plain text");
 await edit({ format: "card" });
 
-process.stdout.write("\n15. the /beacon command\n");
+process.stdout.write("\n15. no command is registered\n");
 await edit({ webhookUrl: BEACON_URL, prefix: "", enabled: true });
-
-/** Invoke the registered command the way the command runtime would. */
-const runBeacon = (rawInput) => state.commands.get("beacon").handler({
-  rawInput,
-  agent: { session: toolSession },
-  signal: undefined,
-  attachments: []
-});
-
-const commandDef = state.commands.get("beacon");
-equal(commandDef.name, "beacon", "the command is named beacon, so it is invoked as /beacon");
-ok(typeof commandDef.description === "string" && commandDef.description.length > 0,
-  "the command advertises a description for discovery");
-equal(commandDef.input?.hint, "on / off / status / clear, or a message to push", "the command advertises an input hint");
-
-const noArgs = await runBeacon("");
-equal(noArgs.kind, "success", "an empty invocation answers rather than failing");
-contains(noArgs.text, "/beacon clear", "the empty invocation shows how the subcommands are spelled");
-
-const statusResult = await runBeacon("status");
-equal(statusResult.kind, "success", "status succeeds");
-contains(statusResult.text, "webhook: configured", "status reports the stored webhook");
-contains(statusResult.text, "format: card", "status reports the format");
-contains(statusResult.text, "questions on, approvals on, failures on", "status reports the switches");
-
-const beforeCommand = webhook.received.length;
-const pushed = await runBeacon("deploy is green");
-equal(pushed.kind, "success", "a message invocation succeeds");
-contains(pushed.text, "Pushed to Feishu", "the reply confirms delivery");
-equal(webhook.received.length, beforeCommand + 1, "the command pushed exactly one message");
-const commandText = payloadTextRaw(webhook.received.at(-1));
-contains(commandText, "deploy is green", "the pushed message carries the text after the command name");
-contains(commandText, "PROGRESS", "the command pushes as a progress milestone");
-contains(commandText, `Task: ${toolTitle}`, "the command push carries the session it came from");
-equal(isCard(webhook.received.at(-1)), true, "the command pushes through the normal format, not a side path");
-
-// A near-miss on a subcommand is a typo, and pushing it would spend a real
-// notification on the user's own mistake.
-const beforeTypo = webhook.received.length;
-const typo = await runBeacon("cleer");
-equal(typo.kind, "success", "an unknown single word is treated as a message, not an error");
-equal(webhook.received.length, beforeTypo + 1, "that word was pushed as a message");
-const nearMiss = await runBeacon("clear now please");
-equal(nearMiss.kind, "error", "a known subcommand with trailing text is refused");
-contains(nearMiss.text, "Unknown subcommand", "the refusal explains itself");
-equal(webhook.received.length, beforeTypo + 1, "the refusal pushed nothing");
-
-// Disabled is disabled, whichever entry point asks.
-await edit({ enabled: false });
-const disabledCommand = await runBeacon("should not go");
-equal(disabledCommand.kind, "error", "the command refuses while the master switch is off");
-contains(disabledCommand.text, "disabled", "the refusal names the switch");
-await edit({ enabled: true });
-
-process.stdout.write("\n16. the /beacon clear subcommand\n");
-const clearResult = await runBeacon("clear");
-equal(clearResult.kind, "success", "clear succeeds");
-contains(clearResult.text, "Cleared the stored webhook", "clear reports what it did");
-ok(!Object.hasOwn(state.config, "webhookUrl"), "clear unsets the stored webhook");
-ok(!Object.hasOwn(state.config, "secret"), "clear unsets the stored secret");
-const clearCommandWrite = state.writes.at(-1);
-equal(clearCommandWrite?.kind, "mutate", "clear travels as a declarative unset");
-equal(clearCommandWrite?.ops, [{ op: "unset", path: ["webhookUrl"] }, { op: "unset", path: ["secret"] }],
-  "clear unsets both credential paths");
-
-// A command that edits configuration rewrites the stored patch, exactly as the
-// settings route does, so the row has to be re-resolved before the next push —
-// that re-resolution is what publishes the new config to the plugin.
-await edit({});
-const pushWithoutWebhook = await runBeacon("after clear");
-equal(pushWithoutWebhook.kind, "error", "pushing without a webhook fails");
-contains(pushWithoutWebhook.text, "no webhookUrl configured", "the failure says what to set");
-await edit({ webhookUrl: BEACON_URL });
+// The `/beacon` command is disabled: a command bypasses the model's recognition of
+// the user's own instruction, which is what the whole authorisation rests on. These
+// assertions hold that state in place; the tool path is covered by section 7b.
+equal(state.commands.size, 0, "no command is registered");
+ok(!mod.inject.includes("commands"),
+  "commands is not injected, because an unused declared service is a load failure waiting to happen");
 
 process.stdout.write("\n17. teardown\n");
 // Re-apply so the disposers under test belong to the row currently mounted.
 await edit({});
 const disposers = state.disposers ?? [];
-ok(disposers.length >= 3, "routes and the command are registered through effects", String(disposers.length));
+// Two routes plus the naming rule; the `/beacon` command is disabled.
+equal(disposers.length, 3, "the routes and the naming rule register effects", String(disposers.length));
 ok(state.routes.size === 2, "the newly mounted row has both routes", String(state.routes.size));
-ok(state.commands.has("beacon"), "the newly mounted row has the command");
+ok(state.sections.has("dsh-feishu-beacon:naming-rule"), "the newly mounted row carries the naming rule");
 for (const dispose of disposers) dispose();
 ok(state.routes.size === 0, "the effect disposers unmount the routes", `still mounted: ${[...state.routes.keys()].join(", ")}`);
-ok(!state.commands.has("beacon"), "the effect disposer unregisters the command");
+ok(!state.sections.has("dsh-feishu-beacon:naming-rule"), "the effect disposer withdraws the naming rule");
 await edit({});
 ok(state.routes.size === 2, "re-applying after teardown mounts them again", String(state.routes.size));
 

@@ -99,7 +99,7 @@ const manifest = (await import(pathToFileURL(manifestPath).href, { with: { type:
 const pluginPath = join(manifestPath, "..", manifest.main ?? "lib/index.js");
 const plugin = await import(pathToFileURL(pluginPath).href);
 
-const state = { tools: new Map(), listeners: [], effects: [], routes: new Map(), writes: [], commands: new Map() };
+const state = { tools: new Map(), listeners: [], effects: [], routes: new Map(), writes: [], commands: new Map(), sections: new Map() };
 const root = new core.Context();
 
 /**
@@ -147,6 +147,14 @@ await Promise.all([
     }
   }),
   provide("settings", settingsService),
+  // The plugin registers both a command (disabled) and a system-prompt section, so the
+  // mount has to satisfy both declared services or cordis will not activate the row.
+  provide("systemPrompt", {
+    section: (definition) => {
+      state.sections.set(definition.name, definition);
+      return () => state.sections.delete(definition.name);
+    }
+  }),
   provide("commands", {
     register: (definition) => {
       state.commands.set(definition.name, definition);
@@ -173,7 +181,7 @@ ok(baseConfig !== undefined, "the bundle patch carries a config base");
 const baseResolved = plugin.Config(baseConfig ?? {});
 ok(baseResolved?.enabled?.get() === true, "the composition base resolves enabled:true");
 ok(baseResolved?.maxChars?.get() === 3000, "the composition base resolves maxChars:3000");
-ok(baseResolved?.format?.get() === "card", "the composition base defaults to the card format");
+ok(baseResolved?.format === "card", "the composition base defaults to the card format");
 ok(baseResolved?.webhookUrl?.get() === "", "the composition base ships no webhook URL");
 
 const typedBase = plugin.Config({ ...baseConfig, notAField: 1 });

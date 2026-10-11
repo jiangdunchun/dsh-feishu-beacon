@@ -21,7 +21,8 @@
         # A card carries more before it stops being readable on a phone, so the
         # budget is wider than the plain-text default it replaced.
         maxChars: 3000
-        # `card` sends an interactive card and falls back to plain text if the
-        # group refuses one. Set `text` to skip the card entirely.
+        # Not offered in the settings form, because a refused card already falls
+        # back to text on its own and choosing by hand only removes the attempt.
+        # Set `text` here to stop trying cards at all.
         format: card
         publicUrl: ''

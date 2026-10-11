@@ -136,7 +136,14 @@ const hasRow = new RegExp(`^- id: dsh-feishu-beacon$`, "m").test(text);
 // Anchoring the name to the end of the line therefore only passes on a profile
 // that never sets a single option.
 const hasLayer = /^# == dsh-feishu-beacon(?![A-Za-z0-9._-])/m.test(text);
-const hasConfig = /maxChars: 1800/.test(text);
+// The row's own config block composed, without pinning a value the profile is free to
+// override. This check runs against the *real* profile, whose patch layer legitimately
+// stores its own `maxChars` (3000 only on a profile that never set one), so asserting a
+// literal number here asserts the local machine, not the composition — it passed on a
+// checkout whose profile held 1800 and would have failed on CI, which builds a profile
+// with no patch layer at all. The base value is pinned where it belongs: cordis-mount.mjs
+// reads it through a real registry, and pack-install-check.mjs reads it out of the tarball.
+const hasConfig = /^\s*maxChars: \d+$/m.test(text) && /^\s*notifyError: (true|false)$/m.test(text);
 const hasToolRow = /^- id: tools$/m.test(text);
 const hasWebServer = /^- id: webserver$/m.test(text);
 const hasSettings = /^- id: settings$/m.test(text);

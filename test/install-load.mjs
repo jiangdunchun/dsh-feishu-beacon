@@ -64,10 +64,17 @@ function makeCtx() {
     routes: new Map(),
     effects: [],
     writes: [],
-    commands: new Map()
+    commands: new Map(),
+    sections: new Map()
   };
   const ctx = {
     tools: { register: (tool) => state.tools.set(tool.name, tool) },
+    systemPrompt: {
+      section: (definition) => {
+        state.sections.set(definition.name, definition);
+        return () => state.sections.delete(definition.name);
+      }
+    },
     commands: {
       register: (definition) => {
         state.commands.set(definition.name, definition);
@@ -141,8 +148,14 @@ ok(host.name === "dsh-feishu-beacon", "the host half exports the loader id");
 ok(Array.isArray(host.inject), "the host half exports its service list");
 ok(typeof host.Config === "function", "the host half exports the Config schema");
 ok(host.Config?.type === "object", "the Config export is a schemastery object schema");
-ok(Object.values(host.Config.dict).every((field) => field.meta?.volatile === true),
-  "every Config field is volatile, so the settings page can edit them");
+// Volatility is what the settings form is built from. `format` is deliberately
+// not in it — a refused card already falls back to text — so the rule is that it
+// is the *only* field the page cannot edit, not that every field is editable.
+const notVolatile = Object.entries(host.Config.dict)
+  .filter(([, field]) => field.meta?.volatile !== true)
+  .map(([field]) => field);
+ok(notVolatile.length === 1 && notVolatile[0] === "format",
+  "format is the only field the settings page cannot edit", notVolatile.join(", "));
 
 // The resolved configuration the Loader would hand a row: volatile fields are
 // live cells, so `apply` must unwrap them rather than compare them as values.
@@ -174,8 +187,11 @@ for (const factory of state.effects) {
 const routePaths = [...state.routes.keys()];
 ok(routePaths.includes("/api/dsh-feishu-beacon/config"), "apply mounts the config route");
 ok(routePaths.includes("/api/dsh-feishu-beacon/test"), "apply mounts the test route");
-ok(state.commands.has("beacon"), "apply registers the /beacon command");
-ok(typeof state.commands.get("beacon")?.handler === "function", "the command carries a handler");
+// The `/beacon` command is disabled, and its `commands` service is therefore not
+// injected: cordis will not activate a row whose declared services are absent, so a
+// service declared for a removed registration is a load failure waiting to happen.
+ok(!host.inject.includes("commands"), "the disabled command's service is not injected");
+ok(state.commands.size === 0, "apply registers no command", String(state.commands.size));
 
 // The write path must go through the settings service. This is the regression
 // the 0.2 migration is about: an older build of this plugin obtained a
