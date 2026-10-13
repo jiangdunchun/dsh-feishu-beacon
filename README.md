@@ -52,36 +52,40 @@ exists to avoid it.
 
 **And nothing is pushed at all until you ask for it, one task at a time.** While you are at
 the keyboard you do not need a phone notification, and the plugin cannot tell whether you
-have stepped away — only you can. So silence is the default, and messages go out only while
-a *watch* is open on the work in front of you. See
+have stepped away — so the agent reads that from your instruction. Silence is the default,
+and messages go out only while a *watch* is open on the work in front of you. See
 [Watching a task](#watching-a-task).
 
 ## Watching a task
 
-A watch is you saying "I am leaving this running; tell me what happens". It opens when you
-ask for it and closes by itself when the task is over, so you never have to remember to turn
-notifications off.
+A watch is you saying "I am leaving this running; tell me what happens". It opens when the
+agent recognises that request in your instruction, and closes by itself when the task is
+over, so you never have to remember to turn notifications off.
 
-**Ask in one specific way — your instruction must contain the word `beacon`:**
+**Ask in your own words. There is no keyword to remember:**
 
-> beacon me about progress and blockers
-> report through dsh-feishu-beacon
-> keep me posted with beacon
+> keep me posted while you work through this
+> I am stepping out — tell me how it goes
+> ping me as each step lands
 
-That word is the entire trigger. The plugin checks your own message for it, so nothing is
-reported unless you said it — and things that merely *look* like a request do not count:
+The agent reads that request out of your instruction and opens the watch with its first
+message. Things that merely *look* like a request are not one:
 
 | Not a request | Why |
 |---|---|
-| "simulate an interactive long task" | Long is not the trigger |
-| "fix the dsh-feishu-beacon plugin" | **This one does count** — it contains the word |
+| "simulate an interactive long task" | A task looking long is not a request |
+| "fix the dsh-feishu-beacon plugin" | Naming the plugin is talking about the tool, not asking to be told about this work |
 | a task on a workspace that uses this plugin | The workspace is not your instruction |
 | "continue with what we did before" | An earlier request authorised an earlier task, not this one |
 
-The check is deliberately literal. The plugin could try to guess whether you meant it, and
-that guess is exactly how a session once started pushing at someone who had asked for
-nothing. A rule the agent can reason its way around is not a rule, so the decision is not
-left to the agent: the tool refuses to start reporting otherwise.
+Reading that intent is the agent's job, and the plugin no longer tries to do it by keyword.
+It used to: an earlier release required the literal word `beacon` in your instruction, and
+that test failed in both directions at once — the word sits inside this package's own name,
+so *"fix the dsh-feishu-beacon plugin"* authorised a notification, while no mechanism could
+tell that mention apart from a request.
+
+What the plugin enforces is the **consequence**: a watch covers one turn, it is the only
+thing that lets a message out, and the switches in the settings page outrank it.
 
 From that moment on:
 
@@ -101,15 +105,16 @@ Asking the agent a question in the middle of a task — answering a decision it 
 **not** end the watch. The agent is still working on the same task; it just needs you first.
 
 A watch is a decision the agent makes, not a switch the plugin flips on your behalf: the
-agent has to recognise that you asked to be kept informed and open one. So the word in your
-instruction is what *authorises* reporting, and the agent acting on it is what *starts* it.
+agent has to recognise that you asked to be kept informed and open one. That is also why a
+later instruction in the same turn does not close it — the turn boundary is the only close,
+and the agent cannot end reporting mid-task either.
 
 ### One task, one authorisation
 
 A watch covers **one task — the work the agent does before it hands control back**. Your next
 instruction starts from silence, even if the previous task never reported that it finished, so
 you can never be left receiving notifications because a watch outlived the request that opened
-it. Ask again — with the word — for the next task.
+it. Ask again — in your own words — for the next task.
 
 ## Before you start
 
@@ -161,9 +166,9 @@ If the page reports a failure instead, see [If it doesn't work](#if-it-doesnt-wo
 
 ### 4. Tell the agent to report
 
-Milestone reporting is the agent's decision, so it needs to be asked once:
+Milestone reporting is the agent's decision, so it needs to be asked once — in your own words:
 
-> report your progress through dsh-feishu-beacon
+> I'm stepping out; keep me posted while you work through this
 
 Questions, authorization requests, and failures need no instruction of their own: while a watch
 is open they are pushed whether or not the agent remembers to report.
@@ -248,17 +253,18 @@ if your bot verifies signatures. A `502` in the page means Feishu itself refused
 message.
 
 **I got no notification.**
-Almost always this is correct. Pushes are silent until your own instruction contains the word
-`beacon`, and they stop when the task ends — so a task you never mentioned the word for
-reports nothing, by design. Check, in order: did that instruction really contain `beacon`?
-Then, should you have been told at all — a run that succeeds sends nothing. Then the
-**Enabled** and the relevant **Notify on…** switches. And if a run failed while reporting was
-authorised and you still heard nothing, the push itself failed: the harness log will carry a
-warning, never an error, because a failed notification must not break your session.
+Start with the likely answer: nothing was asked for. Reporting is silent until the agent
+recognises a request to be kept informed in your instruction, and it stops when the task
+ends — so a task you never asked about reports nothing, by design, and one that merely
+mentions this plugin reports nothing either. Check, in order: did you actually ask to be
+kept posted? Then, should you have been told at all — a run that succeeds sends nothing.
+Then the **Enabled** and the relevant **Notify on…** switches. And if a run failed while
+reporting was open and you still heard nothing, the push itself failed: the harness log will
+carry a warning, never an error, because a failed notification must not break your session.
 
-**The agent says it cannot report because beacon was not named.**
-That is the plugin refusing to start reporting without your authorisation. It is not asking
-you to rephrase: if you want reports, say so with the word `beacon`.
+**The agent says it cannot report without a watch.**
+That is the plugin refusing a push on a turn where no watch was opened. It is not asking you
+to rephrase: if you want reports, say so in your own words.
 
 **The notification arrives but the `Open at:` link doesn't open.**
 That address isn't reachable from the device you read the message on. See
@@ -354,14 +360,16 @@ Two HTTP routes serve the settings section:
 patch: plain fields merge, `clearWebhook` / `clearSecret` unset a stored credential, and an
 empty credential string means "keep the stored value".
 
-Authorisation is a **literal word in the user's own instruction**, checked by the plugin rather
-than inferred by the model. `lib/index.js` folds three facts out of the session log: whether a
-watch was recorded, which turn it was recorded in, and what the human last typed — reading only
-`user/message` events whose `source.kind` is `user`, so an injected runtime-context snapshot or
-skill catalog can never authorise a push. (`message/user` is accepted as well, because this is
-the authorisation check: a harness rename would not degrade the gate, it would silence it.) A
-queued prompt counts too, since one submitted mid-turn waits as `agent/inbox/spliced` with
-`target: "next-turn"` before it becomes a `user/message`.
+Authorisation is the **agent's own `watch: true` call**, and the plugin enforces its
+*consequence* rather than re-reading anyone's wording: `lib/index.js` folds two facts out of
+the session log — whether a watch was recorded, and which turn it was recorded in. The plugin
+never reads the user's message; deciding that a request was made is the agent's job, and the
+prompt says so, including that this package's own name is not one.
+
+An earlier release tested the user's instruction for a literal trigger word instead. That
+test was wrong in both directions at once: the word sits inside `dsh-feishu-beacon`, so
+"fix the dsh-feishu-beacon plugin" authorised a notification, while no mechanism could tell
+that mention apart from a request. It is gone; what remains is the turn-scoped watch.
 
 The turn comparison is what makes the authorisation expire, and it is the *only* thing that
 does: nothing writes to the session when a turn ends. That is not an optimisation — dsh refuses
@@ -453,6 +461,30 @@ If you publish by hand instead, note two traps:
 
 #### 0.2.5
 
+**Reporting is the agent's decision again, and the keyword is gone.** An instruction no longer
+has to contain the word `beacon`; the agent reads whether you asked to be kept informed, in
+whatever words you used, and opens the watch with its first message. The literal test it
+replaces failed in both directions at once — the word sits inside this package's own name, so
+*"fix the dsh-feishu-beacon plugin"* authorised a notification, while no mechanism could tell
+that mention apart from a request. What the plugin still enforces is the consequence: a watch
+covers one turn, it is the only thing that lets a message out, and the settings switches
+outrank it. The tool refuses any call that needs a watch without one, so silence stays the
+default. See [Watching a task](#watching-a-task).
+
+Two consequences worth stating. The plugin **never reads your message**, so authorisation no
+longer depends on any event name or on a queued prompt being recognised. And a later
+instruction in the same turn **cannot** close a watch — the turn boundary is the only close,
+and the agent cannot end reporting mid-task either.
+
+#### 0.2.4
+
+**Breaking: nothing is pushed until your own instruction contains the word `beacon`.** Every
+push is gated on that one literal word, checked by the plugin rather than judged by the agent,
+and the authorisation expires when the task ends. While you are at the keyboard a phone
+notification is noise, and the plugin cannot tell whether you have stepped away — only you can,
+so it no longer guesses. **Upgrading silences the plugin until you name the word for a task.**
+See [Watching a task](#watching-a-task).
+
 **The pushed card is exactly one of four kinds: `plan`, `progress`, `decision`, `done`.** The
 event layer renders through the same four rather than titles of its own. A question and an
 authorization request are both `DECISION` — both need you at your computer — and the body's
@@ -473,15 +505,6 @@ log position, and nothing writes to the session from an observer.
 Also: the instruction is read from `user/message`, the event dsh 0.2 actually emits. The code
 looked only for `message/user`, which never occurs, so authorisation was riding on a fallback
 path.
-
-#### 0.2.4
-
-**Breaking: nothing is pushed until your own instruction contains the word `beacon`.** Every
-push is gated on that one literal word, checked by the plugin rather than judged by the agent,
-and the authorisation expires when the task ends. While you are at the keyboard a phone
-notification is noise, and the plugin cannot tell whether you have stepped away — only you can,
-so it no longer guesses. **Upgrading silences the plugin until you name the word for a task.**
-See [Watching a task](#watching-a-task).
 
 A watch opens when you name that word, and closes by itself when the task ends, which is when
 the agent hands control back. Answering a decision mid-task does not end it: the agent is still

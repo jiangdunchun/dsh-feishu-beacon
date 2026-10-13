@@ -266,12 +266,13 @@ async function callRoute(state, path, method, body) {
 /**
  * The turn every stub session is sitting in, and the instruction that opened it.
  *
- * A task watch is valid only for the turn it was opened in, and only while the user's
- * instruction names the trigger word, so a stub without both would be a session that
- * cannot exist: the user typed something to start the work.
+ * A task watch is valid only for the turn it was opened in. Opening one is the
+ * tool's own call rather than a property of the user's wording, so the stub prompt
+ * is an ordinary request that mentions nothing about notifications - which is the
+ * point: the gate does not read it.
  */
 const STUB_TURN = 1;
-const STUB_PROMPT = "do the work, and beacon me about the progress";
+const STUB_PROMPT = "migrate the schema while I step away";
 
 /**
  * One `user/message` event carrying a human prompt.
@@ -295,9 +296,9 @@ function userMessageEvent(text) {
 /**
  * A session stub shaped like the documented `session/event` callback argument.
  *
- * Seeded with the current turn and an authorising instruction, because the plugin
- * checks both. The watch state lives in the session log, so the stub keeps an
- * append-only list and exposes the whole log through `events` — a decision recorded by
+ * Seeded with the current turn, because a watch is valid only for the turn it was
+ * opened in. The watch state lives in the session log, so the stub keeps an
+ * append-only list and exposes the whole log through `events` — a watch recorded by
  * one push is visible to the next, exactly as it is against a real session.
  *
  * @param events - extra events to seed ahead of the prompt.
@@ -845,23 +846,18 @@ emit(state, quietSession, {
 await settle(40);
 equal(webhook.received.length, beforeQuiet, "an unwatched session pushes nothing, approvals and failures included");
 
-// The tool is the only way in — that is how prose becomes a decision. This session's
-// instruction deliberately does not name the trigger, so the first call is refused;
-// once the word arrives, the same call arms the task scope and pushes.
-const openedSession = fakeSession([{ type: "session/title", data: { title: "Opened by the tool" } }], "no trigger word here");
+// The tool is the only way in, and opening the watch is the model's own call. This
+// session's instruction says nothing about notifications - the gate no longer reads
+// it - so the first call, which does not ask for a watch, is refused; the same call
+// with watch:true is what arms the task scope and pushes.
+const openedSession = fakeSession([{ type: "session/title", data: { title: "Opened by the tool" } }], "migrate the schema while I step away");
 const openedExec = { agent: { session: openedSession }, callId: "call-open", signal: undefined };
 const beforeOpen = webhook.received.length;
 const refusedWithoutWatch = await state.tools.get("dsh_beacon")
   .execute({ message: "nobody asked for this" }, openedExec)
   .then(() => undefined, (error) => String(error?.message ?? error));
-contains(refusedWithoutWatch, "does not name beacon", "an unauthorised tool call says why it refused");
+contains(refusedWithoutWatch, "no watch covers this turn", "an unauthorised tool call says why it refused");
 equal(webhook.received.length, beforeOpen, "the refused tool call pushed nothing");
-openedSession.append("turn/start", { turn: STUB_TURN });
-openedSession.append("user/message", {
-  role: "user",
-  source: { kind: "user" },
-  content: [{ type: "text", text: "beacon me for this one" }]
-});
 const openedResult = await state.tools.get("dsh_beacon")
   .execute({ message: "plan: four steps", kind: "plan", watch: true }, openedExec);
 equal(openedResult, { kind: "plan", delivered: true }, "watch:true opens the watch and pushes the first message");
@@ -893,8 +889,9 @@ equal(webhook.received.length, beforeDecision, "the refused decision card pushed
 await state.tools.get("dsh_beacon").execute({ message: "step 2 of 4 done", kind: "progress" }, openedExec);
 equal(webhook.received.length, beforeDecision + 1, "a milestone is pushed while watching");
 
-// A later instruction in the same turn that drops the word closes the gate again: the
-// authorisation is re-read at every push, not remembered from when the watch opened.
+// A later instruction cannot close the watch: the close is the turn boundary, and
+// the authorisation is not re-read from anyone's wording. Reporting continues to the
+// end of the turn it was opened in.
 openedSession.append("user/message", {
   role: "user",
   source: { kind: "user" },
@@ -905,9 +902,8 @@ emit(state, openedSession, {
   type: "approval/asked",
   data: { id: "approval-after-word", toolName: "pwsh", callId: "call-after-word", reason: "after" }
 });
-await settle(40);
-equal(webhook.received.length, beforeAfterWord,
-  "an instruction that stops naming beacon stops the pushes, without ending the turn");
+ok(await until(() => webhook.received.length === beforeAfterWord + 1, "watched approval after a later instruction"),
+  "a later instruction in the same turn does not close the watch");
 
 // A new turn is what makes the watch (and any authorisation) spent.
 const beforeNextTurn = webhook.received.length;

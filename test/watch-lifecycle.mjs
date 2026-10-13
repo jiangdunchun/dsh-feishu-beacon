@@ -296,27 +296,32 @@ const failureEvent = (time, message) => ({
 
 /* --------------------------------------------------------------------- suite */
 
-process.stdout.write("\n1. nothing reaches the user without a watch\n");
+process.stdout.write("\n1. nothing reaches the user before the tool opens a watch\n");
 const tool = resolve();
-const quiet = fakeSession({ prompt: "migrate the schema, no reporting please" });
+const quiet = fakeSession({ prompt: "migrate the schema while I step away" });
 const beforeQuiet = webhook.received.length;
 emit(state, quiet, questionEvent("q-quiet"));
 emit(state, quiet, approvalEvent("a-quiet"));
 emit(state, quiet, failureEvent("2026-01-01T00:00:01.000Z", "quiet failure"));
 await settle(40);
 equal(webhook.received.length, beforeQuiet,
-  "an instruction that does not name the word pushes nothing: questions, approvals and failures included");
+  "a session no watch was opened on pushes nothing: questions, approvals and failures included");
 
-process.stdout.write("\n2. the tool refuses an instruction that does not name the word\n");
+process.stdout.write("\n2. the tool refuses a call that does not ask for a watch\n");
 const beforeRefusal = webhook.received.length;
-const refused = await callTool(tool, quiet, { message: "nobody asked for this" });
-contains(refused.error, "does not name beacon", "the refusal says what is missing");
+const refused = await tool.execute(
+  { message: "nobody asked for this" },
+  { agent: { session: quiet }, callId: "call-nowatch", signal: undefined }
+).then((value) => ({ value }), (error) => ({ error: String(error?.message ?? error) }));
+contains(refused.error, "no watch covers this turn", "the refusal says what is missing");
 equal(webhook.received.length, beforeRefusal, "the refused call pushed nothing");
 equal(quiet.appended.filter((event) => event.type === "beacon/watch").length, 0,
   "a refused call does not leave a watch behind");
 
-process.stdout.write("\n3. the tool arms the turn when the instruction names the word\n");
-const first = fakeSession();
+process.stdout.write("\n3. the tool arms the turn it asks to watch\n");
+// The instruction deliberately says nothing about notifications: the wording is not
+// what opens a watch, the tool's own watch:true call is.
+const first = fakeSession({ prompt: "rebuild the indexes, this will take a while" });
 const beforeFirst = webhook.received.length;
 const opened = await callTool(tool, first, { message: "1/4: the migration is planned", kind: "plan" });
 equal(opened.value, { kind: "plan", delivered: true }, "the milestone is delivered");
@@ -330,7 +335,7 @@ process.stdout.write("\n4. a spent watch does not lock the next task out\n");
 // The regression this file exists for: the log still holds turn 1's watch, so a gate
 // that asks "has this session ever been watched" answers yes, declines to arm turn 2,
 // and then refuses every push in it.
-first.nextTurn(2, "now the indexes, beacon me again");
+first.nextTurn(2, "now the indexes");
 const beforeSpent = webhook.received.length;
 emit(state, first, approvalEvent("a-spent"));
 await settle(40);
@@ -382,35 +387,18 @@ await settle(40);
 equal(webhook.received.length, beforeDisabled, "the master switch silences the event layer too");
 resolve({ enabled: true, notifyError: true });
 
-process.stdout.write("\n7. only the person's own message authorises\n");
-const contextOnly = fakeSession({
-  prompt: "",
-  seed: [messageEvent("runtime context mentioning beacon in passing", { kind: "runtime-context" })]
-});
-const contextRefused = await callTool(tool, contextOnly, { message: "context is not a request" });
-contains(contextRefused.error, "does not name beacon",
-  "a runtime-context snapshot containing the word is not a request");
-
-const queued = fakeSession({
-  prompt: "",
-  seed: [{
-    type: "agent/inbox/spliced",
-    data: {
-      target: "next-turn",
-      // The queued item is the message itself, not a message event: that is the shape
-      // a live log carries.
-      inserted: [messageEvent("beacon me about this one", { kind: "user" }).data]
-    }
-  }]
-});
-const queuedOpened = await callTool(tool, queued, { message: "queued instruction", kind: "plan" });
-equal(queuedOpened.value, { kind: "plan", delivered: true },
-  "an instruction still queued for the next turn counts as the user's own message");
-
-const legacy = fakeSession({ message: { type: "message/user" } });
-const legacyOpened = await callTool(tool, legacy, { message: "older event name", kind: "plan" });
-equal(legacyOpened.value, { kind: "plan", delivered: true },
-  "the gate still recognises the event name if a harness spells it the other way round");
+process.stdout.write("\n7. the watch comes from the tool's call, not from a message\n");
+// The plugin does not read the user's message at all any more. A session with no
+// instruction still arms on the model's request, and an instruction that asks for
+// quiet is not examined either - the turn boundary is what closes a watch.
+const bare = fakeSession({ prompt: "" });
+const bareOpened = await callTool(tool, bare, { message: "1/2: starting", kind: "plan" });
+equal(bareOpened.value, { kind: "plan", delivered: true },
+  "a session with no instruction at all still arms on the tool's own request");
+const beforeBareEvent = webhook.received.length;
+emit(state, bare, questionEvent("q-bare"));
+ok(await until(() => webhook.received.length === beforeBareEvent + 1, "question on the bare session"),
+  "the armed turn reports, whatever the user's message said");
 
 webhook.received.length = 0;
 await webhook.close();
