@@ -763,7 +763,8 @@ contains(questionText, "No extra service to run.", "first option description");
 contains(questionText, "Needs a server and a migration path.", "second option description");
 contains(questionText, "[multi-select]", "multi-select marker");
 contains(questionText, "Email", "second question option");
-contains(questionText, "Back to your computer to handle this.", "question footer");
+ok(!questionText.includes("Back to your computer"),
+  "the card ends with the options: no footer repeats what the header already said");
 
 process.stdout.write("\n4. callId dedupe\n");
 const beforeDuplicate = webhook.received.length;

@@ -75,7 +75,9 @@ jobs:
             // execFileSync('npm', [...]) (that is ENOENT here, EINVAL for npm.cmd).
             const out = execSync('npm pack --dry-run --json', { encoding: 'utf8' });
             const files = JSON.parse(out)[0].files.map((f) => f.path).sort();
-            const expected = ['LICENSE', 'README.md', 'README.zh.md', 'cordis.patch.yml', 'lib/client.js', 'lib/index.js', 'package.json'];
+            // README.dev.md is not in `files`: npm ships every README* it finds, so
+            // the developer notes ride along whether or not the manifest names them.
+            const expected = ['LICENSE', 'README.md', 'README.zh.md', 'README.dev.md', 'cordis.patch.yml', 'lib/client.js', 'lib/index.js', 'package.json'];
             const extra = files.filter((f) => !expected.includes(f));
             const missing = expected.filter((f) => !files.includes(f));
             if (extra.length > 0) throw new Error('tarball carries files it should not: ' + extra.join(', '));

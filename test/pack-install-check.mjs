@@ -37,10 +37,16 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const packageRoot = join(here, "..");
 
-/** The files a tarball carries, from the manifest that decides it. */
+/**
+ * The files a tarball carries, from the manifest that decides it.
+ *
+ * `files` is only part of the answer: npm always ships `package.json`, `LICENSE`,
+ * and every `README*` it finds, which is why the developer notes are here even
+ * though the manifest does not name them.
+ */
 function publishedPaths() {
   const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
-  return ["package.json", "README.md", "LICENSE", ...(manifest.files ?? [])];
+  return ["package.json", "README.md", "README.dev.md", "LICENSE", ...(manifest.files ?? [])];
 }
 
 /** @deepseek-ai/dsh under npm's global root, when the CLI was installed globally. */

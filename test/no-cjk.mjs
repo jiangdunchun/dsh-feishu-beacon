@@ -30,6 +30,7 @@ const TARGETS = [
   "cordis.patch.yml",
   "README.md",
   "README.zh.md",
+  "README.dev.md",
   "LICENSE",
   ".gitignore",
   "lib/index.js",
